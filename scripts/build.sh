@@ -132,22 +132,27 @@ if [ "$BUILD_BACKEND" = true ]; then
     echo "🦀 构建后端 (aarch64-unknown-linux-musl)..."
     echo ""
 
-    # 检查交叉编译器
-    if ! command -v aarch64-unknown-linux-musl-gcc &> /dev/null; then
-        echo "❌ 错误: 未找到 aarch64-unknown-linux-musl-gcc"
+    # 探测交叉工具链前缀 (macOS brew 为 aarch64-unknown-linux-musl，Linux 发行版常见 aarch64-linux-musl)
+    if command -v aarch64-unknown-linux-musl-ar &> /dev/null; then
+        TOOLCHAIN_PREFIX="aarch64-unknown-linux-musl"
+    elif command -v aarch64-linux-musl-ar &> /dev/null; then
+        TOOLCHAIN_PREFIX="aarch64-linux-musl"
+    else
+        echo "❌ 错误: 未找到 aarch64 musl 交叉编译工具链 (gcc/ar)"
         echo ""
         echo "请安装交叉编译工具链:"
-        echo "  brew tap messense/macos-cross-toolchains"
-        echo "  brew install aarch64-unknown-linux-musl"
+        echo "  macOS: brew install messense/macos-cross-toolchains/aarch64-unknown-linux-musl"
+        echo "  Linux: 解压 musl cross toolchain 并将 bin 目录加入 PATH"
         exit 1
     fi
-    
+    echo "🔧 工具链前缀: $TOOLCHAIN_PREFIX"
+
     cd backend
 
     # 设置交叉编译环境变量
-    export CC_aarch64_unknown_linux_musl=aarch64-unknown-linux-musl-gcc
-    export CXX_aarch64_unknown_linux_musl=aarch64-unknown-linux-musl-g++
-    export AR_aarch64_unknown_linux_musl=aarch64-unknown-linux-musl-ar
+    export CC_aarch64_unknown_linux_musl=${TOOLCHAIN_PREFIX}-gcc
+    export CXX_aarch64_unknown_linux_musl=${TOOLCHAIN_PREFIX}-g++
+    export AR_aarch64_unknown_linux_musl=${TOOLCHAIN_PREFIX}-ar
     export SQLITE3_STATIC=1
     export LIBSQLITE3_SYS_USE_PKG_CONFIG=0
 

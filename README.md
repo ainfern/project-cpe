@@ -54,7 +54,7 @@ powered by Cursor Claude Opus 4.5 & Sonnet 4.5 & OpenAI GPT-5.1/5.2
 ### 构建后端
 
 ```bash
-# 交叉编译 (macOS -> Linux aarch64)
+# 交叉编译 (Linux -> Linux aarch64)
 ./scripts/build.sh
 
 # 带 UPX 压缩
@@ -75,22 +75,29 @@ cd frontend && npm run build
 
 ---
 
-## 🔧 环境配置 (macOS)
+## 🔧 环境配置 (Linux)
 
 ```bash
 # 1. 安装 Rust
-brew install rust rustup
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup default stable
 rustup target add aarch64-unknown-linux-musl
 
-# 2. 安装交叉编译工具链
-brew tap messense/macos-cross-toolchains
-brew install aarch64-unknown-linux-musl
+# 2. 安装交叉编译工具链 (musl.cc 预编译工具链，前缀为 aarch64-linux-musl)
+wget https://musl.cc/aarch64-linux-musl-cross.tgz
+tar -xzf aarch64-linux-musl-cross.tgz
+export PATH="$PWD/aarch64-linux-musl-cross/bin:$PATH"
 
-# 3. 验证
+# 3. 安装其余构建依赖
+sudo apt install upx-ucl        # UPX 压缩 (build.sh 默认启用)
+sudo apt install mtd-utils      # mkfs.ubifs (--pack 打包 UBIFS)
+
+# 4. 验证
 rustup target list --installed
-which aarch64-unknown-linux-musl-gcc
+which aarch64-linux-musl-gcc
 ```
+
+> `build.sh` 会自动探测 `aarch64-linux-musl-*` 或 `aarch64-unknown-linux-musl-*` 前缀的工具链，将工具链 `bin` 目录加入 `PATH` 即可。
 
 ---
 
