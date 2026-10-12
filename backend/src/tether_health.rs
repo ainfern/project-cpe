@@ -28,6 +28,14 @@
 //! - 禁止 `iptables -F` / `ip6tables -F`（整表清空误杀合法规则）
 //! - 禁止自动 soft-reset / UDC bounce / connmanctl tether off→on（会弄僵 RNDIS 或改网段）
 //! - 所有动作幂等、可在任意周期重复执行
+//!
+//! ## 已知噪声：usb0 `RX errors/frame` 是驱动统计，不是坏包
+//! `sipa_usb` 路径给**每个 RX 包 1:1 记一次 `rx_frame_errors`**（errs 恒 = pkts + 120，
+//! 那 120 是开机 bring-up 一次性产生）。实测依据（2026-10-12）：6MB adb push（其间
+//! +6216 "errors"）md5 一致；`InCsumErrors=0`、`rx_dropped=0`、`overruns=0`；
+//! TCP 重传 313/389214 ≈ 0.08%；dmesg 长时间无 USB reset/disconnect。
+//! **判断链路健康看 `rx_dropped` / `RetransSegs` / `InCsumErrors`，别看 errors/frame**
+//! （曾被误读成 SFP 故障复发；userspace 无法修，厂商驱动 stat 映射问题）。
 
 use std::fs;
 use std::io::{self, Write};
