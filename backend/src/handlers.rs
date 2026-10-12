@@ -25,9 +25,10 @@ use zbus::Connection;
 use crate::{
     config::{ConfigManager, RefreshConfig},
     dbus::{
-        get_airplane_mode, get_all_apn_contexts, get_data_connection_status, get_device_info_data,
-        get_network_info_data, get_qos_info_data, get_radio_mode, get_roaming_status, get_serving_cell_info,
-        get_sim_info_data, send_at_command, set_airplane_mode, set_apn_properties, set_data_connection,
+        find_internet_context, get_airplane_mode, get_all_apn_contexts, get_current_imsi,
+        get_data_connection_status, get_device_info_data, get_network_info_data, get_qos_info_data,
+        get_radio_mode, get_roaming_status, get_serving_cell_info, get_sim_info_data,
+        send_at_command, set_airplane_mode, set_apn_properties, set_data_connection,
         set_radio_mode, set_roaming_allowed,
     },
     models::*,
@@ -43,6 +44,7 @@ use crate::{
 };
 use crate::state::FrontendRuntime;
 use std::process::Command;
+use tracing::{info, warn};
 
 /// 处理 OPTIONS 请求（CORS 预检）
 pub async fn options_handler() -> impl IntoResponse {
@@ -2440,6 +2442,63 @@ pub async fn get_apn_list_handler(
     }
 }
 
+/// 把保存成功的 APN profile 回写厂商权威文件 `/mnt/data/ofono/<imsi>/defult_apn`
+///
+/// 厂商魔改版 ofonod 开机时会用该文件**整段覆盖** context1（回填源，
+/// 2026-10-12 标记实验确认：文件里放什么，重启后 context 就被重置成什么）。
+/// 不同步它，页面保存的值重启即被打回出厂默认。文件位于 IMSI 子目录，
+/// 天然按卡隔离——换卡后 ofonod 读新卡目录，不会读到这张卡的配置。
+fn sync_defult_apn_file(imsi: &str, ctx: &ApnContext) -> Result<(), String> {
+    use std::fs;
+
+    // 目录名由 IMSI 拼接，先挡住异常字符（防目录穿越）
+    if imsi.is_empty() || !imsi.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(format!("invalid IMSI: {}", imsi));
+    }
+
+    // 格式与厂商文件逐字段一致（含 [userDefultApn] 段名与 defult 拼写）
+    let content = format!(
+        "[userDefultApn]\nAccessPointName={}\nUsername={}\nPassword={}\nAuthenticationMethod={}\nProtocol={}\n",
+        ctx.apn, ctx.username, ctx.password, ctx.auth_method, ctx.protocol
+    );
+
+    let dir = format!("/mnt/data/ofono/{}", imsi);
+    let tmp = format!("{}/defult_apn.tmp", dir);
+    fs::write(&tmp, &content).map_err(|e| format!("write {}: {}", tmp, e))?;
+    fs::rename(&tmp, format!("{}/defult_apn", dir)).map_err(|e| format!("rename: {}", e))
+}
+
+/// 保存成功后同步厂商权威 APN 存储
+///
+/// 只同步"主 internet context"（厂商回填也只作用于它）；改其他 context 不写，
+/// 避免污染回填源。任何失败仅告警——保存本身已生效，不影响接口返回。
+async fn sync_apn_persistent(conn: &Connection, ctx: &ApnContext) {
+    match find_internet_context(conn).await {
+        Ok(primary) if primary == ctx.path => {}
+        Ok(_) => return,
+        Err(e) => {
+            warn!(error = %e, "apn: skip vendor defult_apn sync (no internet context)");
+            return;
+        }
+    }
+
+    let imsi = match get_current_imsi(conn).await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "apn: skip vendor defult_apn sync (IMSI unavailable)");
+            return;
+        }
+    };
+
+    match sync_defult_apn_file(&imsi, ctx) {
+        Ok(()) => info!(imsi, apn = %ctx.apn, "apn: synced vendor defult_apn"),
+        Err(e) => warn!(
+            error = %e,
+            "apn: failed to sync vendor defult_apn (APN will revert to default after reboot)"
+        ),
+    }
+}
+
 /// POST /api/apn - 设置 APN 配置
 ///
 /// # 请求体
@@ -2484,7 +2543,12 @@ pub async fn set_apn_handler(
                         .iter()
                         .find(|c| c.path == req.context_path)
                         .cloned();
-                    
+
+                    // 同步厂商权威存储，防止开机回填把保存值打回默认
+                    if let Some(ctx) = updated_context.as_ref() {
+                        sync_apn_persistent(&conn, ctx).await;
+                    }
+
                     (
                         StatusCode::OK,
                         Json(ApiResponse::success_with_message(

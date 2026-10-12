@@ -404,6 +404,25 @@ pub async fn set_data_connection(conn: &Connection, active: bool) -> zbus::Resul
     }).await
 }
 
+/// 获取当前 SIM 卡的 IMSI（ofono SimManager 属性 `SubscriberIdentity`）
+///
+/// 用于定位 `/mnt/data/ofono/<imsi>/` 状态目录——该目录按 IMSI 隔离，
+/// 读写时动态获取、绝不硬编码，换卡后自动指向新卡自己的目录。
+pub async fn get_current_imsi(conn: &Connection) -> Result<String, String> {
+    let proxy = SimManagerProxy::new(conn)
+        .await
+        .map_err(|e| format!("sim proxy error: {}", e))?;
+    let props = proxy
+        .get_properties()
+        .await
+        .map_err(|e| format!("sim properties error: {}", e))?;
+    props
+        .get("SubscriberIdentity")
+        .and_then(|v| String::try_from(v.clone()).ok())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "SubscriberIdentity (IMSI) not available".to_string())
+}
+
 /// 获取数据连接状态
 ///
 /// # Arguments
