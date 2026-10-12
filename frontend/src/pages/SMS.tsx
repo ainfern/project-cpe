@@ -77,14 +77,17 @@ export default function SMSPage() {
   const [conversationMessages, setConversationMessages] = useState<SmsMessage[]>([])
   const [conversationLoading, setConversationLoading] = useState(false)
   
-  // 聊天区域滚动引用
-  const chatEndRef = useRef<HTMLDivElement>(null)
+  // 消息容器引用
+  const chatBoxRef = useRef<HTMLDivElement>(null)
   // 输入框焦点状态 - 有焦点时暂停刷新避免失焦
   const inputFocusedRef = useRef(false)
 
-  // 滚动到底部
+  // 滚动到底部：只滚消息容器自身
+  // scrollIntoView 会连带滚动文档——页面只要有任何溢出就会把整个窗口
+  // 顶到最底（表现为"整页上抬"），因此绝不能用在窗口级滚动上
   const scrollToBottom = useCallback(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = chatBoxRef.current
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [])
 
   // 获取短信列表
@@ -361,13 +364,18 @@ export default function SMSPage() {
                 onClick={() => handleSelectConversation(conv.phoneNumber)}
                 selected={selectedConversation === conv.phoneNumber}
               >
-                <Avatar sx={{ mr: 2, bgcolor: 'primary.light' }}><Person /></Avatar>
+                <Badge
+                  badgeContent={conv.messages.length}
+                  color="primary"
+                  max={99}
+                  overlap="circular"
+                  sx={{ mr: 2 }}
+                >
+                  <Avatar sx={{ bgcolor: 'primary.light' }}><Person /></Avatar>
+                </Badge>
                 <ListItemText
                   primary={
-                    <Box display="flex" alignItems="center" gap={1}>
-                      <Typography fontWeight={600}>{conv.phoneNumber}</Typography>
-                      <Badge badgeContent={conv.messages.length} color="primary" max={99} />
-                    </Box>
+                    <Typography fontWeight={600}>{conv.phoneNumber}</Typography>
                   }
                   secondary={
                     <Typography variant="body2" color="text.secondary" noWrap sx={{ maxWidth: 180 }}>
@@ -412,6 +420,7 @@ export default function SMSPage() {
 
       {/* 中部：消息气泡 */}
       <Box 
+        ref={chatBoxRef}
         sx={{ 
           flex: 1, 
           overflow: 'auto', 
@@ -471,7 +480,6 @@ export default function SMSPage() {
                 </Paper>
               </Box>
             ))}
-            <div ref={chatEndRef} />
           </>
         )}
       </Box>

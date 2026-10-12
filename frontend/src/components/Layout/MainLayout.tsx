@@ -168,7 +168,9 @@ export default function MainLayout() {
               sm: desktopOpen ? `calc(100% - ${DRAWER_WIDTH}px)` : '100%',
             },
             mt: { xs: 7, sm: 8 },
-            minHeight: '100vh',
+            // 顶栏 fixed 占位已由 mt 承担，minHeight 必须扣掉它，
+            // 否则文档恒高 100vh + 顶栏高，页面无谓出现 56/64px 滚动条
+            minHeight: { xs: 'calc(100vh - 56px)', sm: 'calc(100vh - 64px)' },
             backgroundColor: 'background.default',
             transition: theme.transitions.create(['width', 'margin'], {
               easing: theme.transitions.easing.sharp,

@@ -166,7 +166,9 @@ export default function ATConsolePage() {
   const [showImeiPanel, setShowImeiPanel] = useState(false)
 
   return (
-    <Box sx={{ height: { md: 'calc(100vh - 100px)' }, display: 'flex', flexDirection: 'column' }}>
+    // 可用高度 = 100vh - 顶栏 64 - main 上下 padding 24×2 = 100vh - 112
+    // （原先减 100 会溢出 12px，多出一条几乎无内容可滚的滚动条）
+    <Box sx={{ height: { md: 'calc(100vh - 112px)' }, display: 'flex', flexDirection: 'column' }}>
       {/* 错误提示 Snackbar */}
       <ErrorSnackbar error={error} onClose={() => setError(null)} />
 
