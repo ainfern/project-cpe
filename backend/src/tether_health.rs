@@ -3,7 +3,7 @@
  *
  * Copyright (c) 2026 by 1orz, All Rights Reserved.
  */
-//! USB 共享健康巡检（点1/2：SFP、usb0 守护、开机脚本持久修补、NAT 保障）
+//! USB 共享健康巡检（SFP、usb0 守护、NAT 保障）
 //!
 //! ## 拓扑（重要）
 //! ```text
@@ -21,8 +21,11 @@
 //! 4. 清除 connman 偶发的 192.168.67.1 错误别名（会让对端丢网段）
 //! 5. 定点删除 FORWARD DROP（复用 iptables 模块，绝不整表 -F）
 //! 6. 保障 NAT MASQUERADE（66/24 → 蜂窝），不依赖 connmanctl tether
-//! 7. 持久修补 /etc/route_test.sh（消灭开机自动打开 SFP / 插入 DROP 的毒源）
-//! 8. 守护 rp_filter=0（all/default/usb0/sipa_eth0；严格反向路径过滤会丢非对称包）
+//! 7. 守护 rp_filter=0（all/default/usb0/sipa_eth0；严格反向路径过滤会丢非对称包）
+//!
+//! 注：`/etc/route_test.sh` 的 SFP/DROP 修复已固化进刷机镜像（2026-10-12），
+//! 后端不再做运行时文件补丁；若回刷未固化的旧镜像，仅剩"开机 → 首轮巡检"
+//! 之间的短窗口，且后端故障时无人兜底——不支持旧镜像。
 //!
 //! ## 设计红线
 //! - 禁止 `iptables -F` / `ip6tables -F`（整表清空误杀合法规则）
@@ -59,9 +62,6 @@ const USB_BAD_ALIAS_IP: &str = "192.168.67.1";
 /// SFP（Sprd Forward Path）硬件转发开关
 const SFP_ENABLE_PATH: &str = "/proc/net/sfp/enable";
 const SFP_TETHER_SCHEME_PATH: &str = "/proc/net/sfp/tether_scheme";
-
-/// 厂商开机初始化脚本（含打开 SFP 与插入 FORWARD DROP 的毒源）
-const ROUTE_TEST_SCRIPT_PATH: &str = "/etc/route_test.sh";
 
 /// 需要保证 rp_filter=0 的网络配置（`conf/all` 与各接口分别守护）
 ///
@@ -227,81 +227,6 @@ fn ensure_usb66_masquerade() -> bool {
         .unwrap_or(false)
 }
 
-/// 以可写方式写根分区文件（必要时临时 remount rw，写完恢复 ro）
-fn write_rootfs_file(path: &Path, content: &str) -> io::Result<()> {
-    if fs::write(path, content).is_ok() {
-        return Ok(());
-    }
-    let _ = Command::new("mount").args(["-o", "remount,rw", "/"]).output();
-    let result = fs::write(path, content);
-    let _ = Command::new("mount").args(["-o", "remount,ro", "/"]).output();
-    result
-}
-
-/// 持久修补 `/etc/route_test.sh`：开机不再打开 SFP，并注释掉会掐断
-/// USB 共享的 FORWARD DROP 规则。
-///
-/// 原脚本每次开机执行：
-/// - `echo 1 > /proc/net/sfp/enable` / `tether_scheme`（重新打开 SFP）
-/// - `iptables/ip6tables -I FORWARD -i usb0 -o sipa_eth0 -j DROP`（掐断共享）
-///
-/// 不修这个，运行时巡检只能在"开机 → backend 首轮巡检"之间留下故障窗口；
-/// 修一次则重启免疫（OTA 只替换 /home/root，不会覆盖 /etc）。
-///
-/// 幂等：内容无变化时直接返回 false；若脚本改版导致模式匹配不上则告警。
-pub fn patch_route_test_disable_sfp() -> io::Result<bool> {
-    let path = Path::new(ROUTE_TEST_SCRIPT_PATH);
-    if !path.exists() {
-        return Ok(false);
-    }
-
-    let original = fs::read_to_string(path)?;
-    let mut patched = original
-        .replace(
-            "echo 1 > /proc/net/sfp/enable",
-            "echo 0 > /proc/net/sfp/enable",
-        )
-        .replace(
-            "echo 1 > /proc/net/sfp/tether_scheme",
-            "echo 0 > /proc/net/sfp/tether_scheme",
-        );
-
-    patched = patched
-        .lines()
-        .map(|line| {
-            let trimmed = line.trim_start();
-            let should_comment = !trimmed.starts_with('#')
-                && (trimmed.starts_with("iptables -I FORWARD -i usb0")
-                    || trimmed.starts_with("ip6tables -I FORWARD -i usb0"));
-            if should_comment {
-                format!("# {}", line)
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    if !patched.ends_with('\n') {
-        patched.push('\n');
-    }
-
-    if patched == original {
-        // 已是补丁后状态；若仍存在未匹配的毒源变体，告警提示人工检查
-        if original.contains("/proc/net/sfp") && original.contains("echo 1 > /proc/net/sfp") {
-            warn!(
-                path = ROUTE_TEST_SCRIPT_PATH,
-                "route_test.sh still contains unmatched 'echo 1 > /proc/net/sfp' variant"
-            );
-        }
-        return Ok(false);
-    }
-
-    write_rootfs_file(path, &patched)?;
-    info!(path = ROUTE_TEST_SCRIPT_PATH, "patched route_test.sh (SFP off, DROP commented)");
-    Ok(true)
-}
-
 /// 同步巡检核心（在 blocking 上下文执行）
 fn ensure_health_sync() -> Result<bool, String> {
     let mut acted = false;
@@ -333,10 +258,6 @@ fn ensure_health_sync() -> Result<bool, String> {
     if ensure_rp_filter_disabled() {
         // 明细（哪个 conf、原值）已在函数内按项打印
         acted = true;
-    }
-    if let Err(e) = patch_route_test_disable_sfp() {
-        // 修补失败不阻断其他巡检项
-        warn!(error = %e, "tether: failed to patch route_test.sh");
     }
 
     Ok(acted)

@@ -1023,7 +1023,45 @@ pub async fn get_network_info_data(conn: &Connection) -> zbus::Result<NetworkInf
     })
 }
 
+/// 读取 /proc/cmdline 中的 `key=value` 参数
+fn cmdline_param(key: &str) -> Option<String> {
+    let cmdline = std::fs::read_to_string("/proc/cmdline").ok()?;
+    let prefix = format!("{}=", key);
+    cmdline
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix(prefix.as_str()))
+        .map(str::to_string)
+}
+
+/// 固件构建版本：/etc/timestamp（YYYYMMDDHHMMSS）→ "YYYY-MM-DD HH:MM"
+fn firmware_build_version() -> Option<String> {
+    let raw = std::fs::read_to_string("/etc/timestamp").ok()?;
+    let raw = raw.trim();
+    if raw.len() == 14 && raw.chars().all(|c| c.is_ascii_digit()) {
+        Some(format!(
+            "{}-{}-{} {}:{}",
+            &raw[0..4],
+            &raw[4..6],
+            &raw[6..8],
+            &raw[8..10],
+            &raw[10..12]
+        ))
+    } else if raw.is_empty() {
+        None
+    } else {
+        Some(raw.to_string())
+    }
+}
+
+/// ofono 占位假值判定（厂商插件对未实现属性返回 "Fake Modem ..."）
+fn is_ofono_placeholder(value: &str) -> bool {
+    value.trim().is_empty() || value.trim_start().starts_with("Fake ")
+}
+
 /// 获取设备信息（来自 D-Bus Modem 接口）
+///
+/// 厂商 ofono 的 Manufacturer/Model 返回占位假值、Revision 属性从未实现
+/// （AT+CGMR 也只回空 OK），因此缺失/假值时回退到 cmdline 与固件时间戳。
 ///
 /// # Arguments
 /// * `conn` - D-Bus 连接
@@ -1039,19 +1077,31 @@ pub async fn get_device_info_data(conn: &Connection) -> zbus::Result<DeviceInfoR
         .and_then(|v| String::try_from(v.clone()).ok())
         .unwrap_or_default();
 
-    let manufacturer = props
+    let mut manufacturer = props
         .get("Manufacturer")
         .and_then(|v| String::try_from(v.clone()).ok())
         .unwrap_or_default();
+    if is_ofono_placeholder(&manufacturer) {
+        // 模组为 Unisoc（展锐）UDX710 平台，ofono 未提供真实厂商名
+        manufacturer = "Unisoc".to_string();
+    }
 
-    let model = props
+    let mut model = props
         .get("Model")
         .and_then(|v| String::try_from(v.clone()).ok())
         .unwrap_or_default();
+    if is_ofono_placeholder(&model) {
+        // cmdline: product.name=SY108-68810 等硬件真实型号
+        if let Some(name) = cmdline_param("product.name") {
+            model = name;
+        }
+    }
 
     let revision = props
         .get("Revision")
-        .and_then(|v| String::try_from(v.clone()).ok());
+        .and_then(|v| String::try_from(v.clone()).ok())
+        .filter(|r| !is_ofono_placeholder(r))
+        .or_else(firmware_build_version);
 
     let online = props
         .get("Online")
