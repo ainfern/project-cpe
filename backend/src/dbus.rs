@@ -503,10 +503,14 @@ pub async fn set_roaming_allowed(conn: &Connection, allowed: bool) -> zbus::Resu
 ///
 /// # Arguments
 /// * `conn` - D-Bus 连接
+/// * `data_disabled_by_user` - 用户曾在页面关闭数据流量（尊重意图，不自动激活）
 ///
 /// # Returns
 /// 初始化结果消息
-pub async fn init_data_connection(conn: &Connection) -> String {
+pub async fn init_data_connection(conn: &Connection, data_disabled_by_user: bool) -> String {
+    if data_disabled_by_user {
+        return "Data disabled by user, auto-connect skipped".to_string();
+    }
     // 1. 先检查网络注册状态
     match NetworkRegistrationProxy::new(conn).await {
         Ok(net_proxy) => {
@@ -711,10 +715,20 @@ async fn reconnect_data_connection(conn: &Connection) -> Result<(), String> {
 /// # Arguments
 /// * `conn` - D-Bus 连接
 /// * `state` - 跨轮次的探测失败计数与重拨冷却状态
+/// * `data_disabled_by_user` - 用户曾在页面关闭数据流量——视为刻意关闭，
+///   跳过一切自动恢复（激活/重拨），否则开关会被 watchdog 顶回去
 ///
 /// # Returns
 /// 当前状态描述字符串
-async fn check_and_restore_data_connection(conn: &Connection, state: &mut WatchdogState) -> String {
+async fn check_and_restore_data_connection(
+    conn: &Connection,
+    state: &mut WatchdogState,
+    data_disabled_by_user: bool,
+) -> String {
+    if data_disabled_by_user {
+        return "Data disabled by user, auto-connect skipped".to_string();
+    }
+
     // 1. 检查网络注册状态
     let net_status = match NetworkRegistrationProxy::new(conn).await {
         Ok(net_proxy) => {
@@ -880,8 +894,9 @@ pub async fn data_connection_watchdog(
             Err(e) => warn!(error = %e, "Watchdog: USB tether health check failed"),
         }
         
-        // 2. 检查并恢复数据连接（含外网连通性探测）
-        let result = check_and_restore_data_connection(&conn, &mut state).await;
+        // 2. 检查并恢复数据连接（含外网连通性探测；尊重用户的关闭意图）
+        let data_disabled_by_user = config_manager.is_data_disabled_by_user();
+        let result = check_and_restore_data_connection(&conn, &mut state, data_disabled_by_user).await;
         
         // 只在状态变化时打印日志，避免刷屏
         if result != last_data_log {

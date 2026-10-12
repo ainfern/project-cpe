@@ -239,12 +239,18 @@ pub async fn get_device_info(State(conn): State<Arc<Connection>>) -> impl IntoRe
 /// 与 connman 的规则管理冲突）。
 pub async fn set_data_status(
     State(conn): State<Arc<Connection>>,
+    State(config_manager): State<Arc<ConfigManager>>,
     Json(payload): Json<DataConnectionRequest>,
 ) -> impl IntoResponse {
-    // 设置数据连接状态
+    // 先记录用户意图：关闭时 watchdog 不得自动恢复，开启时恢复自动守护；
+    // set 失败则回滚意图，保持与实际连接状态一致
+    let previous_intent = config_manager.is_data_disabled_by_user();
+    if let Err(e) = config_manager.set_data_disabled_by_user(!payload.active) {
+        tracing::warn!(error = %e, "failed to persist data connection intent");
+    }
+
     match set_data_connection(&conn, payload.active).await {
         Ok(_) => {
-            
             (
                 StatusCode::OK,
                 Json(ApiResponse::success_with_message(
@@ -253,13 +259,18 @@ pub async fn set_data_status(
                 )),
             )
         }
-        Err(e) => (
-            StatusCode::OK,
-            Json(ApiResponse::<DataConnectionResponse>::error(format!(
-                "Failed to set data connection: {}",
-                e
-            ))),
-        ),
+        Err(e) => {
+            if let Err(re) = config_manager.set_data_disabled_by_user(previous_intent) {
+                tracing::warn!(error = %re, "failed to rollback data connection intent");
+            }
+            (
+                StatusCode::OK,
+                Json(ApiResponse::<DataConnectionResponse>::error(format!(
+                    "Failed to set data connection: {}",
+                    e
+                ))),
+            )
+        }
     }
 }
 
@@ -658,6 +669,20 @@ fn get_mode_name(mode: Option<u8>) -> String {
 ///   }
 /// }
 /// ```
+/// 是否存在待重启生效的 USB 模式配置
+///
+/// 开机脚本 PRJ_SRT880.sh 的优先级：mode_tmp.cfg（一次性，用后即删）
+/// 优先于 mode.cfg（持久）。意图模式与硬件当前模式不一致才提示重启。
+fn usb_mode_needs_reboot(config: &usb_switch::UsbModeConfigResult) -> bool {
+    let intended = config.temporary_mode.or(config.permanent_mode);
+    match (intended, config.current_mode) {
+        (Some(want), Some(have)) => want != have,
+        // 有配置但读不到硬件状态时保守提示；无任何待应用配置则不提示
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
 pub async fn get_usb_mode() -> impl IntoResponse {
     // 读取 USB 模式配置（包括硬件状态和配置文件）
     match usb_switch::get_usb_mode_config() {
@@ -667,7 +692,7 @@ pub async fn get_usb_mode() -> impl IntoResponse {
                 current_mode_name: get_mode_name(config.current_mode),
                 permanent_mode: config.permanent_mode,
                 temporary_mode: config.temporary_mode,
-                needs_reboot: true, // 始终需要重启
+                needs_reboot: usb_mode_needs_reboot(&config),
                 read_mode: "hardware".to_string(),
             };
             (
@@ -928,7 +953,7 @@ pub async fn get_system_stats() -> impl IntoResponse {
                 current_mode_name: get_mode_name(config.current_mode),
                 permanent_mode: config.permanent_mode,
                 temporary_mode: config.temporary_mode,
-                needs_reboot: true,
+                needs_reboot: usb_mode_needs_reboot(&config),
                 read_mode: "hardware".to_string(),
             },
             Err(_) => UsbModeResponse::default(),

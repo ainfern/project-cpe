@@ -202,6 +202,9 @@ pub struct AppConfig {
     pub sms_push: SmsPushConfig,
     #[serde(default)]
     pub refresh: RefreshConfig,
+    /// 用户在页面上主动关闭了数据流量（watchdog/init 尊重该意图，不自动恢复）
+    #[serde(default)]
+    pub data_disabled_by_user: bool,
 }
 
 
@@ -285,6 +288,20 @@ impl ConfigManager {
 
     pub fn get_refresh(&self) -> RefreshConfig {
         self.config.read().unwrap().refresh.clone().sanitize()
+    }
+
+    /// 用户是否主动关闭了数据流量
+    pub fn is_data_disabled_by_user(&self) -> bool {
+        self.config.read().unwrap().data_disabled_by_user
+    }
+
+    /// 记录用户的数据流量开关意图（持久化到 config.json）
+    pub fn set_data_disabled_by_user(&self, disabled: bool) -> Result<(), String> {
+        {
+            let mut config = self.config.write().unwrap();
+            config.data_disabled_by_user = disabled;
+        }
+        self.save()
     }
 
     pub fn set_refresh(&self, refresh: RefreshConfig) -> Result<(), String> {

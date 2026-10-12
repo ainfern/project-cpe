@@ -85,6 +85,8 @@ export function useDashboardData(refreshInterval: number, refreshKey: number) {
   const [speedHistory, setSpeedHistory] = useState<Record<string, InterfaceSpeedHistory>>({})
   const speedHistoryRef = useRef<Record<string, InterfaceSpeedHistory>>({})
   const requestIdRef = useRef(0)
+  // 开关操作后的短暂互斥：期间忽略轮询写回，防止"点了没反应/被刷回去"
+  const controlStateLockRef = useRef(0)
 
   const updateSpeedHistory = useCallback((stats: SystemStatsResponse | null) => {
     if (!stats?.network_speed?.interfaces) return
@@ -186,7 +188,9 @@ export function useDashboardData(refreshInterval: number, refreshKey: number) {
 
     const dataStatusResult = baseResults[4]
     if (dataStatusResult.status === 'fulfilled') {
-      if (dataStatusResult.value.data) setDataStatus(dataStatusResult.value.data.active)
+      if (dataStatusResult.value.data && Date.now() > controlStateLockRef.current) {
+        setDataStatus(dataStatusResult.value.data.active)
+      }
     } else {
       baseErrors.push(formatRequestError('数据连接状态', dataStatusResult.reason))
     }
@@ -233,7 +237,9 @@ export function useDashboardData(refreshInterval: number, refreshKey: number) {
 
     const roamingResult = extendedResults[1]
     if (roamingResult.status === 'fulfilled') {
-      if (roamingResult.value.data) setRoaming(roamingResult.value.data)
+      if (roamingResult.value.data && Date.now() > controlStateLockRef.current) {
+        setRoaming(roamingResult.value.data)
+      }
     } else {
       extendedErrors.push(formatRequestError('漫游状态', roamingResult.reason))
     }
@@ -257,6 +263,7 @@ export function useDashboardData(refreshInterval: number, refreshKey: number) {
   const toggleData = useCallback(async () => {
     if (dataStatus === null) return
 
+    controlStateLockRef.current = Date.now() + 2500
     try {
       const newStatus = !dataStatus
       await api.setDataStatus(newStatus)
@@ -283,6 +290,7 @@ export function useDashboardData(refreshInterval: number, refreshKey: number) {
   const toggleRoaming = useCallback(async () => {
     if (!roaming) return
 
+    controlStateLockRef.current = Date.now() + 2500
     try {
       const newAllowed = !roaming.roaming_allowed
       const response = await api.setRoamingAllowed(newAllowed)

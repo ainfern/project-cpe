@@ -8,7 +8,7 @@
  * 
  * Copyright (c) 2025 by 1orz, All Rights Reserved. 
  */
-import { useCallback, useEffect, useState, type ChangeEvent, type MouseEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type MouseEvent } from 'react'
 import {
   Box,
   Typography,
@@ -155,6 +155,8 @@ export default function ConfigurationPage() {
   const [expanded, setExpanded] = useState<string | false>('dataConnection')
   
   const [dataStatus, setDataStatus] = useState(false)
+  // 数据开关操作后的短暂互斥：期间忽略 loadData 的轮询写回
+  const dataToggleLockRef = useRef(0)
   const [usbMode, setUsbMode] = useState<UsbModeResponse | null>(null)
   const [selectedUsbMode, setSelectedUsbMode] = useState<number>(1)
   const [usbModePermanent, setUsbModePermanent] = useState<boolean>(false)
@@ -223,10 +225,13 @@ export default function ConfigurationPage() {
         api.getSmsPushConfig(),
       ])
       
-      if (dataRes.data) setDataStatus(dataRes.data.active)
+      if (dataRes.data && Date.now() > dataToggleLockRef.current) setDataStatus(dataRes.data.active)
       if (usbRes.data) {
         setUsbMode(usbRes.data)
-        setSelectedUsbMode(usbRes.data.current_mode || 1)
+        // 初始选中"待生效配置"（临时 > 永久 > 硬件当前），与开机脚本优先级一致
+        setSelectedUsbMode(
+          (usbRes.data.temporary_mode ?? usbRes.data.permanent_mode ?? usbRes.data.current_mode) || 1
+        )
       }
       if (airplaneModeRes.data) setAirplaneMode(airplaneModeRes.data)
       if (webhookRes.data) setWebhookConfig(webhookRes.data)
@@ -264,6 +269,7 @@ export default function ConfigurationPage() {
       setError(null)
       setSuccess(null)
       const newStatus = !dataStatus
+      dataToggleLockRef.current = Date.now() + 2500
       await api.setDataStatus(newStatus)
       setDataStatus(newStatus)
       setSuccess(`数据连接已${newStatus ? '启用' : '禁用'}`)
@@ -877,7 +883,16 @@ export default function ConfigurationPage() {
                 fullWidth
                 color={useHotSwitch ? 'warning' : 'primary'}
                 onClick={handleUsbModeApply}
-                disabled={hotSwitching || (selectedUsbMode === usbMode?.current_mode && !useHotSwitch)}
+                disabled={(() => {
+                  // 按"保存目标文件"判断：所选模式已存在于目标配置（临时/永久各自的文件）
+                  // 才禁用。临时配置开机用后即删、之后回落到永久配置，所以即使临时
+                  // 已是指定值，写永久模式依然是有意义的操作，不能置灰。
+                  if (hotSwitching || !usbMode) return true
+                  const targetHasSelected = usbModePermanent
+                    ? usbMode.permanent_mode === selectedUsbMode
+                    : usbMode.temporary_mode === selectedUsbMode
+                  return targetHasSelected && !useHotSwitch
+                })()}
                 startIcon={hotSwitching ? <CircularProgress size={20} /> : (useHotSwitch ? <FlashOn /> : undefined)}
               >
                 {hotSwitching ? '切换中...' : (useHotSwitch ? '立即热切换' : '保存配置')}

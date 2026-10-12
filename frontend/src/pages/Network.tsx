@@ -225,15 +225,18 @@ export default function NetworkPage() {
         setApnContexts(apnRes.data.contexts)
         // 只在首次加载时初始化 APN 表单，避免覆盖用户输入
         if (!apnInitializedRef.current) {
-          const activeContext = apnRes.data.contexts.find(c => c.apn) || apnRes.data.contexts[0]
-          if (activeContext) {
-            setSelectedContext(activeContext.path)
+          // 主槽位 = 第一个 internet 类型 context（与后端 find_internet_context、
+          // 以及 defult_apn 开机回填的目标保持一致）
+          const primaryContext =
+            apnRes.data.contexts.find((c) => c.context_type === 'internet') ?? apnRes.data.contexts[0]
+          if (primaryContext) {
+            setSelectedContext(primaryContext.path)
             setApnForm({
-              apn: activeContext.apn,
-              protocol: activeContext.protocol,
-              username: activeContext.username,
-              password: activeContext.password,
-              auth_method: activeContext.auth_method,
+              apn: primaryContext.apn,
+              protocol: primaryContext.protocol,
+              username: primaryContext.username,
+              password: primaryContext.password,
+              auth_method: primaryContext.auth_method,
             })
           }
           apnInitializedRef.current = true
@@ -491,22 +494,7 @@ export default function NetworkPage() {
     setter((prev) => (prev.includes(band) ? prev.filter((b) => b !== band) : [...prev, band]))
   }
 
-  // APN 选择变更
-  const handleContextChange = (path: string) => {
-    setSelectedContext(path)
-    const context = apnContexts.find(c => c.path === path)
-    if (context) {
-      setApnForm({
-        apn: context.apn,
-        protocol: context.protocol,
-        username: context.username,
-        password: context.password,
-        auth_method: context.auth_method,
-      })
-    }
-  }
-
-  // 保存 APN 配置
+  // 保存 APN 配置（仅主槽位；恢复多槽位选择器时需一并恢复 handleContextChange）
   const saveApn = async () => {
     if (!selectedContext) {
       setError('请选择一个 APN 配置')
@@ -1438,7 +1426,16 @@ export default function NetworkPage() {
                   <Alert severity="warning">未找到可用的 APN 配置</Alert>
                 ) : (
                   <Box display="flex" flexDirection="column" gap={2.5}>
-                    {/* Context 选择 */}
+                    {/*
+                      只暴露主槽位（context1），不做槽位选择器。原因（2026-10-12 实测）：
+                      厂商 ofonod 对槽位 2+ 是"假持久"——保存会写进 gprs 文件，但重启时
+                      运行时上下文按 modem profile（CGDCONT）重建，不读文件里的 [contextN] 段，
+                      重启后 D-Bus/API 中槽位 2+ 的值为空（文件里残留孤儿数据，还会被
+                      ofono 下次重写文件时自然冲掉）。只有主槽位有完整持久链：
+                      ofonod 开机按 defult_apn 回填 + 后端保存时同步回写。
+                      若厂商将来修复多槽位持久，可恢复下方注释里的槽位选择器。
+                    */}
+                    {/*
                     <FormControl fullWidth>
                       <InputLabel>选择 APN 配置槽位</InputLabel>
                       <Select
@@ -1457,8 +1454,7 @@ export default function NetworkPage() {
                         ))}
                       </Select>
                     </FormControl>
-
-                    <Divider />
+                    */}
 
                     {/* APN 名称 */}
                     <TextField
