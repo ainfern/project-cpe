@@ -13,8 +13,10 @@
 //! 处理与 ofono D-Bus 服务的通信
 
 use std::collections::HashMap;
+use std::process::Command;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::task;
 use tracing::{info, warn};
 use zbus::{proxy, zvariant::OwnedValue, Connection, Proxy};
 
@@ -630,16 +632,70 @@ async fn auto_configure_apn(conn: &Connection, context_path: &str) -> Result<Str
     Ok(format!("Auto-configured APN: {} ({})", apn, protocol))
 }
 
+/// 连续探测失败多少轮才判定"假在线"（PDP Active 但外网不通）
+const CONNECTIVITY_FAILURE_THRESHOLD: u32 = 3;
+/// 重拨冷却：两次数据连接重置之间至少间隔这么久，避免与网络抖动对抗
+const CONNECTIVITY_RECONNECT_COOLDOWN: Duration = Duration::from_secs(120);
+/// 探测目标与 /api/connectivity 保持一致：IPv4、IPv6 任一可达即视为在线
+const CONNECTIVITY_PROBE_V4: &str = "223.5.5.5";
+const CONNECTIVITY_PROBE_V6: &str = "2400:3200::1";
+
+/// watchdog 跨轮次状态
+#[derive(Default)]
+struct WatchdogState {
+    /// 连续探测失败次数（成功/重拨/未注册/未激活时清零，封顶阈值避免刷日志）
+    connectivity_failures: u32,
+    /// 上次执行数据连接重拨的时刻（None = 尚未重拨过）
+    last_reconnect: Option<Instant>,
+}
+
+/// 外网连通性探测（阻塞，须在 blocking 线程执行）
+///
+/// IPv4 与 IPv6 任一 ping 通即视为在线；两个目标都无法执行视为探测不可用。
+fn connectivity_probe_blocking() -> Result<bool, String> {
+    for (cmd, target) in [("ping", CONNECTIVITY_PROBE_V4), ("ping6", CONNECTIVITY_PROBE_V6)] {
+        match Command::new(cmd).args(["-c", "1", "-W", "2", target]).output() {
+            Ok(result) if result.status.success() => return Ok(true),
+            Ok(_) => {}
+            Err(e) => return Err(format!("failed to execute {}: {}", cmd, e)),
+        }
+    }
+    Ok(false)
+}
+
+/// 外网连通性探测（ping 阻塞调用，放到 blocking 线程）
+async fn connectivity_probe() -> Result<bool, String> {
+    task::spawn_blocking(connectivity_probe_blocking)
+        .await
+        .map_err(|e| format!("connectivity probe task failed: {}", e))?
+}
+
+/// 重拨数据连接：先断开，稍等再激活
+///
+/// 用于 PDP 显示 Active 但实际已不通的场景，比"只读 Active 状态"多一层真实验证。
+async fn reconnect_data_connection(conn: &Connection) -> Result<(), String> {
+    set_data_connection(conn, false)
+        .await
+        .map_err(|e| format!("deactivate failed: {}", e))?;
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    set_data_connection(conn, true)
+        .await
+        .map_err(|e| format!("activate failed: {}", e))
+}
+
 /// 检查并恢复数据连接
 ///
 /// 这个函数被 watchdog 调用，检查数据连接状态并在需要时恢复
 ///
 /// # Arguments
 /// * `conn` - D-Bus 连接
+/// * `state` - 跨轮次的探测失败计数与重拨冷却状态
 ///
 /// # Returns
 /// 当前状态描述字符串
-async fn check_and_restore_data_connection(conn: &Connection) -> String {
+async fn check_and_restore_data_connection(conn: &Connection, state: &mut WatchdogState) -> String {
     // 1. 检查网络注册状态
     let net_status = match NetworkRegistrationProxy::new(conn).await {
         Ok(net_proxy) => {
@@ -656,6 +712,7 @@ async fn check_and_restore_data_connection(conn: &Connection) -> String {
     
     // 网络未注册时不尝试恢复
     if net_status != "registered" && net_status != "roaming" {
+        state.connectivity_failures = 0;
         return format!("Waiting for network (status: {})", net_status);
     }
     
@@ -708,13 +765,62 @@ async fn check_and_restore_data_connection(conn: &Connection) -> String {
     
     // 5. 如果连接未激活，尝试激活
     if !active {
+        state.connectivity_failures = 0;
         match set_data_connection(conn, true).await {
             Ok(_) => return format!("Connection restored (APN: {})", apn),
             Err(e) => return format!("Activation failed: {}", e),
         }
     }
     
-    // 6. 连接正常
+    // 6. 真实外网连通性探测：PDP 显示 Active 但实际 ping 不通的"假在线"
+    match connectivity_probe().await {
+        Ok(true) => {
+            state.connectivity_failures = 0;
+        }
+        Ok(false) => {
+            // 封顶阈值：冷却期内计数不再增长，日志状态保持稳定不刷屏
+            state.connectivity_failures = (state.connectivity_failures + 1)
+                .min(CONNECTIVITY_FAILURE_THRESHOLD);
+            if state.connectivity_failures < CONNECTIVITY_FAILURE_THRESHOLD {
+                return format!(
+                    "Connected but connectivity probe failing ({}/{})",
+                    state.connectivity_failures, CONNECTIVITY_FAILURE_THRESHOLD
+                );
+            }
+            if let Some(last) = state.last_reconnect {
+                let elapsed = last.elapsed();
+                if elapsed < CONNECTIVITY_RECONNECT_COOLDOWN {
+                    // 冷却期内不再重拨（成功失败都算一次重拨），避免反复弹拨
+                    return format!(
+                        "Probe failed {} times; reconnect on cooldown ({}s)",
+                        state.connectivity_failures,
+                        CONNECTIVITY_RECONNECT_COOLDOWN.as_secs()
+                    );
+                }
+            }
+            state.last_reconnect = Some(Instant::now());
+            return match reconnect_data_connection(conn).await {
+                Ok(()) => {
+                    let failures = state.connectivity_failures;
+                    state.connectivity_failures = 0;
+                    format!(
+                        "Connectivity probe failed {} times, data connection reconnected (APN: {})",
+                        failures, apn
+                    )
+                }
+                Err(e) => format!(
+                    "Connectivity probe failed {} times, reconnect failed: {}",
+                    state.connectivity_failures, e
+                ),
+            };
+        }
+        Err(e) => {
+            // 探测本身不可用（如 ping 缺失）时不误判、不重拨
+            return format!("Connected but connectivity probe unavailable: {}", e);
+        }
+    }
+    
+    // 7. 连接正常
     format!("Connected (APN: {})", apn)
 }
 
@@ -734,6 +840,7 @@ pub async fn data_connection_watchdog(
     use crate::tether_health::ensure_usb_tether_health;
 
     let mut last_data_log = String::new();
+    let mut state = WatchdogState::default();
     
     loop {
         let refresh = config_manager.get_refresh();
@@ -754,8 +861,8 @@ pub async fn data_connection_watchdog(
             Err(e) => warn!(error = %e, "Watchdog: USB tether health check failed"),
         }
         
-        // 2. 检查并恢复数据连接
-        let result = check_and_restore_data_connection(&conn).await;
+        // 2. 检查并恢复数据连接（含外网连通性探测）
+        let result = check_and_restore_data_connection(&conn, &mut state).await;
         
         // 只在状态变化时打印日志，避免刷屏
         if result != last_data_log {

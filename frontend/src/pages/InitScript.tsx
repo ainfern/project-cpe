@@ -395,7 +395,7 @@ export default function InitScriptPage() {
               gap={{ xs: 1.5, sm: 2 }}
               mb={{ xs: 2, sm: 2.5 }}
             >
-              <Box sx={{ width: '100%' }}>
+              <Box sx={{ width: '100%', minWidth: 0, flex: 1 }}>
                 <Typography variant="h6">脚本编辑</Typography>
                 <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" mt={1}>
                   <Chip
@@ -422,7 +422,7 @@ export default function InitScriptPage() {
               <Stack
                 direction={{ xs: 'column', sm: 'row' }}
                 spacing={1.25}
-                sx={{ width: { xs: '100%', md: 'auto' } }}
+                sx={{ width: { xs: '100%', md: 'auto' }, flexShrink: 0, whiteSpace: 'nowrap' }}
               >
                 <Button
                   variant="contained"

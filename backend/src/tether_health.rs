@@ -22,6 +22,7 @@
 //! 5. 定点删除 FORWARD DROP（复用 iptables 模块，绝不整表 -F）
 //! 6. 保障 NAT MASQUERADE（66/24 → 蜂窝），不依赖 connmanctl tether
 //! 7. 持久修补 /etc/route_test.sh（消灭开机自动打开 SFP / 插入 DROP 的毒源）
+//! 8. 守护 rp_filter=0（all/default/usb0/sipa_eth0；严格反向路径过滤会丢非对称包）
 //!
 //! ## 设计红线
 //! - 禁止 `iptables -F` / `ip6tables -F`（整表清空误杀合法规则）
@@ -53,6 +54,12 @@ const SFP_TETHER_SCHEME_PATH: &str = "/proc/net/sfp/tether_scheme";
 
 /// 厂商开机初始化脚本（含打开 SFP 与插入 FORWARD DROP 的毒源）
 const ROUTE_TEST_SCRIPT_PATH: &str = "/etc/route_test.sh";
+
+/// 需要保证 rp_filter=0 的网络配置（`conf/all` 与各接口分别守护）
+///
+/// rp_filter 非 0 时内核按反向路径校验丢包，非对称/转发路径上表现为
+/// 偶发丢包且极难排查；正常值 0，被内核/connman/脚本改回非 0 时这里纠正。
+const RP_FILTER_CONFS: [&str; 4] = ["all", "default", "usb0", "sipa_eth0"];
 
 fn write_file(path: &str, content: &str) -> io::Result<()> {
     let mut file = fs::OpenOptions::new()
@@ -146,6 +153,32 @@ fn clear_usb0_bad_alias() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// 守护 rp_filter=0（幂等：读到非 0 才写回，接口不存在则跳过）
+///
+/// `conf/all` 与接口值取 max 生效，两者都要是 0 才真正关闭反向路径过滤。
+fn ensure_rp_filter_disabled() -> bool {
+    let mut acted = false;
+    for conf in RP_FILTER_CONFS {
+        let path = format!("/proc/sys/net/ipv4/conf/{}/rp_filter", conf);
+        let current = match fs::read_to_string(&path) {
+            Ok(v) => v,
+            // 接口尚未创建（如 usb0 未枚举）时该目录不存在，下一轮自然会补
+            Err(_) => continue,
+        };
+        if current.trim() == "0" {
+            continue;
+        }
+        match write_file(&path, "0") {
+            Ok(()) => {
+                acted = true;
+                info!(conf, value = %current.trim(), "tether: rp_filter reset to 0");
+            }
+            Err(e) => warn!(conf, error = %e, "tether: failed to write rp_filter"),
+        }
+    }
+    acted
 }
 
 /// 保障 `192.168.66.0/24 → 蜂窝` 的 NAT MASQUERADE
@@ -288,6 +321,10 @@ fn ensure_health_sync() -> Result<bool, String> {
     if ensure_usb66_masquerade() {
         acted = true;
         info!("tether: restored NAT MASQUERADE for 192.168.66.0/24");
+    }
+    if ensure_rp_filter_disabled() {
+        // 明细（哪个 conf、原值）已在函数内按项打印
+        acted = true;
     }
     if let Err(e) = patch_route_test_disable_sfp() {
         // 修补失败不阻断其他巡检项
