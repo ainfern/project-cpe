@@ -15,6 +15,51 @@
 use std::process::Command;
 use tokio::task;
 
+/// 需要定点清除的转发 DROP 规则所涉及的接口
+const USB_IF: &str = "usb0";
+const WAN_IF: &str = "sipa_eth0";
+
+/// 定点删除 `usb0 → sipa_eth0` 的 FORWARD DROP 规则（v4 + v6，幂等）
+///
+/// 厂商开机脚本 `/etc/route_test.sh` 会插入该规则，直接掐断
+/// "电脑/OpenWrt(usb0) → 设备 → 蜂窝(sipa_eth0)" 的共享转发。
+///
+/// ## 设计约束（重要）
+/// - **只删这一条规则**，绝不 `iptables -F` 整表清空：整表 flush 会误杀
+///   connman/厂商的其他合法规则，且与 connman 形成对抗循环
+///   （数据看门狗旧实现的教训）
+/// - 幂等：规则不存在时 `-C` 返回非零，直接跳过
+/// - 每轮最多删除3 条（防止异常场景下无限循环）
+///
+/// 供 `tether_health` 巡检（同步上下文）调用。
+///
+/// # Returns
+/// * `true` - 本次删除了至少一条规则
+pub fn clear_usb0_drop_rules_sync() -> bool {
+    let mut removed = false;
+    for cmd in ["iptables", "ip6tables"] {
+        for _ in 0..3 {
+            let check = Command::new(cmd)
+                .args(["-C", "FORWARD", "-i", USB_IF, "-o", WAN_IF, "-j", "DROP"])
+                .output();
+            let exists = check.map(|o| o.status.success()).unwrap_or(false);
+            if !exists {
+                break;
+            }
+            let deleted = Command::new(cmd)
+                .args(["-D", "FORWARD", "-i", USB_IF, "-o", WAN_IF, "-j", "DROP"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !deleted {
+                break;
+            }
+            removed = true;
+        }
+    }
+    removed
+}
+
 /// iptables 规则统计信息
 #[derive(Debug, Default)]
 pub struct IptablesRuleCount {
@@ -22,6 +67,7 @@ pub struct IptablesRuleCount {
     pub ipv6_rules: usize,
 }
 
+#[allow(dead_code)] // 保留给手动"重置防火墙"场景的统计接口
 impl IptablesRuleCount {
     /// 是否有任何规则
     pub fn has_rules(&self) -> bool {
@@ -41,6 +87,7 @@ impl IptablesRuleCount {
 /// # Returns
 /// * `Ok(IptablesRuleCount)` - 规则统计
 /// * `Err(String)` - 操作失败的错误信息
+#[allow(dead_code)] // 保留给手动"重置防火墙"场景；自动路径已改为定点删除
 pub async fn get_iptables_rule_count() -> Result<IptablesRuleCount, String> {
     task::spawn_blocking(|| {
         let mut count = IptablesRuleCount::default();
@@ -87,6 +134,7 @@ pub async fn get_iptables_rule_count() -> Result<IptablesRuleCount, String> {
 /// - INPUT 链
 /// - FORWARD 链
 /// - OUTPUT 链
+#[allow(dead_code)] // 保留给手动"重置防火墙"场景；自动路径禁止整表 flush
 pub async fn flush_iptables() -> Result<(), String> {
     task::spawn_blocking(|| {
         // 清空 filter 表的所有规则

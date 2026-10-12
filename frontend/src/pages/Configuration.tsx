@@ -158,7 +158,8 @@ export default function ConfigurationPage() {
   const [usbMode, setUsbMode] = useState<UsbModeResponse | null>(null)
   const [selectedUsbMode, setSelectedUsbMode] = useState<number>(1)
   const [usbModePermanent, setUsbModePermanent] = useState<boolean>(false)
-  const [useHotSwitch, setUseHotSwitch] = useState<boolean>(false)
+  // [热切换已停用] 开关 UI 已注释，恒为 false；仅保留状态供既有分支编译
+  const [useHotSwitch] = useState<boolean>(false)
   const [rebooting, setRebooting] = useState(false)
   const [hotSwitching, setHotSwitching] = useState(false)
   
@@ -805,8 +806,10 @@ export default function ConfigurationPage() {
 
             <Divider sx={{ my: 2 }} />
 
-            {/* USB 热切换选项 */}
-
+            {/* USB 热切换选项 —— 功能已停用（2026-10-12）：
+                热切换链路依赖 connmanctl tether 重建，存在改网段/弄坏枚举风险，
+                后端 /api/usb-advance 已同步注释。恢复时前后端一起解开注释。 */}
+            {/*
             <Box sx={{ mb: 2, p: 2, bgcolor: useHotSwitch ? 'warning.light' : 'action.hover', borderRadius: 1 }}>
               <FormControlLabel
                 control={
@@ -831,6 +834,7 @@ export default function ConfigurationPage() {
                 }
               />
             </Box>
+            */}
 
             {!useHotSwitch && (
               <FormControl component="fieldset" fullWidth sx={{ mb: 2 }}>

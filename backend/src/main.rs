@@ -41,12 +41,14 @@ mod db;
 mod dbus;
 mod handlers;
 mod iptables;
+mod ipv6_share;
 mod models;
 mod ota;
 mod serial;
 mod sms_push;
 mod sms_listener;
 mod state;
+mod tether_health;
 mod usb_switch;
 mod utils;
 mod webhook;
@@ -240,6 +242,17 @@ async fn main() -> Result<()> {
         });
     }
 
+    // IPv6 共享上网自愈（地址卫生 + 策略路由回程探测，非破坏性）
+    ipv6_share::spawn_ipv6_share_heal();
+
+    // USB 共享健康巡检：启动立即执行一轮
+    // （关 SFP、守护 usb0、清 DROP、NAT 保障、route_test.sh 持久修补）
+    match tether_health::ensure_usb_tether_health().await {
+        Ok(true) => info!("USB tether health applied at startup"),
+        Ok(false) => info!("USB tether health ok at startup"),
+        Err(e) => warn!(error = %e, "USB tether health check failed"),
+    }
+
     // CORS 配置：允许前端开发服务器跨域访问
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -315,7 +328,8 @@ async fn main() -> Result<()> {
         .route("/api/voicemail/status", get(get_voicemail_status_handler).options(options_handler))
         // ========== USB 模式接口 ==========
         .route("/api/usb-mode", get(get_usb_mode).post(set_usb_mode).options(options_handler))
-        .route("/api/usb-advance", post(set_usb_mode_advanced).options(options_handler))
+        // [已停用 2026-10-12] 热切换 USB 模式接口（见 handlers.rs 同日期注释）
+        // .route("/api/usb-advance", post(set_usb_mode_advanced).options(options_handler))
         // ========== 系统接口 ==========
         .route("/api/stats", get(get_system_stats).options(options_handler))
         .route("/api/stats/cpu", get(get_cpu_info).options(options_handler))

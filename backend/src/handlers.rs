@@ -30,7 +30,6 @@ use crate::{
         get_sim_info_data, send_at_command, set_airplane_mode, set_apn_properties, set_data_connection,
         set_radio_mode, set_roaming_allowed,
     },
-    iptables::flush_iptables,
     models::*,
     usb_switch,
     utils::{
@@ -233,18 +232,14 @@ pub async fn get_device_info(State(conn): State<Arc<Connection>>) -> impl IntoRe
 /// ```
 ///
 /// # 说明
-/// 每次切换数据连接状态时，会自动清空 iptables 规则（flush），
-/// 以确保网络配置处于干净状态
+/// 切换数据连接只操作 PS 域本身，不触碰防火墙（历史版本会在切换前
+/// 整表 flush iptables/ip6tables，已移除：整表清空会误杀合法规则并
+/// 与 connman 的规则管理冲突）。
 pub async fn set_data_status(
     State(conn): State<Arc<Connection>>,
     Json(payload): Json<DataConnectionRequest>,
 ) -> impl IntoResponse {
-    // 1. 先清空 iptables 规则
-    if let Err(_e) = flush_iptables().await {
-        // 清空规则失败不应阻止数据连接操作，静默处理
-    }
-
-    // 2. 设置数据连接状态
+    // 设置数据连接状态
     match set_data_connection(&conn, payload.active).await {
         Ok(_) => {
             
@@ -741,6 +736,10 @@ pub async fn set_usb_mode(Json(payload): Json<SetUsbModeRequest>) -> impl IntoRe
     }
 }
 
+// [已停用 2026-10-12] USB 热切换接口：依赖 connmanctl tether 重建链路，
+// 存在改网段(192.168.67.1)/权限失败/弄坏 USB 枚举的风险；前端入口已同步注释。
+// 恢复时解除本注释并恢复 /api/usb-advance 路由。
+/*
 /// POST /api/usb-advance - 热切换USB模式（立即生效，无需重启）
 ///
 /// 高级接口：直接操作 configfs 实现热切换
@@ -791,6 +790,7 @@ pub async fn set_usb_mode_advanced(Json(payload): Json<SetUsbModeRequest>) -> im
         ),
     }
 }
+*/
 
 /// GET /api/stats/cpu - 获取 CPU 信息
 ///

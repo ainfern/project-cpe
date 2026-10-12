@@ -33,6 +33,9 @@
 //! | 2    | ECM    | 0x1782 | 0x4039 | Yes | ECM + 调试接口 |
 //! | 3    | RNDIS  | 0x1782 | 0x4038 | Yes | RNDIS + 调试接口 |
 
+// [热切换功能已停用 2026-10-12] /api/usb-advance 已注释，本模块调用图整体不可达。
+// 保留实现以便将来恢复；恢复时解除 handlers.rs 路由注释即可，无需改动本模块。
+#![allow(dead_code)]
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -105,10 +108,6 @@ const UDC_PATH: &str = "/sys/kernel/config/usb_gadget/g1/UDC";
 const PAMU3_PROTOCOL_PATH: &str = "/sys/devices/platform/soc/soc:ipa/2b300000.pamu3/pamu3_protocol";
 const PAMU3_MAX_DL_PKTS_PATH: &str = "/sys/devices/platform/soc/soc:ipa/2b300000.pamu3/max_dl_pkts";
 
-/// SFP (Sprd Forward Path) 转发加速路径
-const SFP_ENABLE_PATH: &str = "/proc/net/sfp/enable";
-const SFP_TETHER_SCHEME_PATH: &str = "/proc/net/sfp/tether_scheme";
-
 /// slog_bridge 日志传输路径
 const SLOG_TRANSPORT_PATH: &str = "/sys/module/slog_bridge/parameters/log_transport";
 
@@ -172,17 +171,6 @@ fn set_log_transport(enable: bool) -> io::Result<()> {
     if Path::new(SLOG_TRANSPORT_PATH).exists() {
         let value = if enable { "1" } else { "0" };
         write_to_file(SLOG_TRANSPORT_PATH, value)?;
-    }
-    Ok(())
-}
-
-/// 启用 SFP 硬件转发加速
-fn enable_sfp_acceleration() -> io::Result<()> {
-    if Path::new(SFP_ENABLE_PATH).exists() {
-        let _ = write_to_file(SFP_ENABLE_PATH, "1");
-    }
-    if Path::new(SFP_TETHER_SCHEME_PATH).exists() {
-        let _ = write_to_file(SFP_TETHER_SCHEME_PATH, "1");
     }
     Ok(())
 }
@@ -714,8 +702,10 @@ fn configure_usb_network() -> Result<(), String> {
         .args(["sipa_usb0", "down"])
         .output();
     
-    // 4. 启用 SFP 硬件转发加速
-    let _ = enable_sfp_acceleration();
+    // 4. 关闭 SFP 硬件转发加速
+    // USB 共享场景下 SFP 会引发 sfp init mac fail → usb0 RX 错误 → USB 断连，
+    // 共享统一走内核软件转发（详见 tether_health 模块）
+    crate::tether_health::disable_sfp_now();
     
     // 5. 标记配置完成
     let _ = fs::write("/tmp/sipa_usb0_ok", "");
