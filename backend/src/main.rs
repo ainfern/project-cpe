@@ -44,6 +44,7 @@ mod iptables;
 mod ipv6_share;
 mod models;
 mod ota;
+mod perf_tune;
 mod serial;
 mod sms_push;
 mod sms_listener;
@@ -254,6 +255,19 @@ async fn main() -> Result<()> {
         Err(e) => warn!(error = %e, "USB tether health check failed"),
     }
 
+    // IRQ/RPS 性能调优：按持久化开关在启动时套用一次
+    {
+        let enabled = config_manager.is_perf_tune_enabled();
+        perf_tune::set_enabled_flag(enabled);
+        if enabled {
+            match perf_tune::apply_tuning() {
+                Ok(true) => info!("perf_tune: applied at startup"),
+                Ok(false) => info!("perf_tune: already applied at startup"),
+                Err(e) => warn!(error = %e, "perf_tune: startup apply failed"),
+            }
+        }
+    }
+
     // CORS 配置：允许前端开发服务器跨域访问
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -347,6 +361,8 @@ async fn main() -> Result<()> {
         .route("/api/sms-push/test", post(test_sms_push_handler).options(options_handler))
         .route("/api/refresh/config", get(get_refresh_config_handler).post(set_refresh_config_handler).options(options_handler))
         .route("/api/refresh/heartbeat", post(frontend_refresh_heartbeat_handler).options(options_handler))
+        // ========== IRQ/RPS 性能调优开关 ==========
+        .route("/api/perf-tune", get(get_perf_tune_handler).post(set_perf_tune_handler).options(options_handler))
         // ========== OTA 更新接口 ==========
         .route("/api/ota/status", get(get_ota_status_handler).options(options_handler))
         .route("/api/ota/upload", post(upload_ota_handler).options(options_handler)

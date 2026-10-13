@@ -242,16 +242,44 @@ pub fn apply_ota_update(restart_now: bool) -> Result<String, String> {
     let staging_binary = Path::new(OTA_STAGING_DIR).join("udx710");
     let staging_www = Path::new(OTA_STAGING_DIR).join("www");
 
-    fs::copy(&staging_binary, OTA_BINARY_PATH)
+    // 二进制：写到 .new 再 rename 覆盖。rename 可原子替换正在运行的文件
+    // （旧进程继续用旧 inode），避免 fs::copy 直接写运行中二进制的 ETXTBSY。
+    let new_binary_path = format!("{}.new", OTA_BINARY_PATH);
+    fs::copy(&staging_binary, &new_binary_path)
         .map_err(|e| format!("Failed to copy binary: {}", e))?;
-
     Command::new("chmod")
-        .args(["755", OTA_BINARY_PATH])
+        .args(["755", &new_binary_path])
         .output()
         .map_err(|e| format!("Failed to chmod binary: {}", e))?;
+    fs::rename(&new_binary_path, OTA_BINARY_PATH)
+        .map_err(|e| format!("Failed to activate binary: {}", e))?;
 
-    let _ = fs::remove_dir_all(OTA_WWW_PATH);
-    copy_dir_recursive(staging_www.to_str().unwrap_or(""), OTA_WWW_PATH)?;
+    // 前端：先拷到 www.new，校验入口文件后再整体替换。
+    // 不允许「删旧失败仍继续拷贝」——那会退化成合并，残留旧哈希 JS。
+    let new_www_path = format!("{}.new", OTA_WWW_PATH);
+    if Path::new(&new_www_path).exists() {
+        let _ = fs::remove_dir_all(&new_www_path);
+    }
+    copy_dir_recursive(staging_www.to_str().unwrap_or(""), &new_www_path)?;
+
+    let index_path = Path::new(&new_www_path).join("index.html");
+    if !index_path.is_file() {
+        let _ = fs::remove_dir_all(&new_www_path);
+        return Err("www.new missing index.html".to_string());
+    }
+
+    if Path::new(OTA_WWW_PATH).exists() {
+        if let Err(e) = fs::remove_dir_all(OTA_WWW_PATH) {
+            let _ = fs::remove_dir_all(&new_www_path);
+            return Err(format!(
+                "Failed to remove old www (aborted, old frontend kept): {}",
+                e
+            ));
+        }
+    }
+    fs::rename(&new_www_path, OTA_WWW_PATH)
+        .map_err(|e| format!("Failed to activate new www: {}", e))?;
+
     fix_file_permissions("/home/root")?;
     crate::config::ensure_loader_hooks_init()?;
 

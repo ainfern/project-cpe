@@ -71,6 +71,7 @@ import type {
   WebhookTestResponse,
   SmsPushConfig,
   RefreshConfigResponse,
+  PerfTuneResponse,
   OtaStatusResponse,
   OtaUploadResponse,
 } from './types'
@@ -572,6 +573,18 @@ class UDX710API {
     return request<ApiResponse<RefreshConfigResponse>>('/refresh/config', {
       method: 'POST',
       body: JSON.stringify({ interval_ms: intervalMs }),
+    })
+  }
+
+  // ========== IRQ/RPS 性能调优 ==========
+  async getPerfTune() {
+    return request<ApiResponse<PerfTuneResponse>>('/perf-tune')
+  }
+
+  async setPerfTune(enabled: boolean) {
+    return request<ApiResponse<PerfTuneResponse>>('/perf-tune', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
     })
   }
 

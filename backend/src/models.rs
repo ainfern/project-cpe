@@ -1123,6 +1123,29 @@ pub struct RefreshConfigResponse {
     pub frontend_connected: bool,
 }
 
+/// IRQ/RPS 性能调优开关状态
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct PerfTuneResponse {
+    /// 用户开关（持久化）
+    pub enabled: bool,
+    /// 当前内核参数是否处于调优态
+    pub applied: bool,
+    /// xhci IRQ 编号
+    pub irq: String,
+    /// 当前 smp_affinity
+    pub affinity: String,
+    /// 各网卡 rps_cpus（如 `sipa_eth0=3`）
+    pub rps: Vec<String>,
+    /// rps_sock_flow_entries
+    pub flow: String,
+}
+
+/// 开关请求体
+#[derive(Debug, Deserialize)]
+pub struct PerfTuneRequest {
+    pub enabled: bool,
+}
+
 // ============ OTA 更新模型 ============
 
 /// OTA 更新包元数据（meta.json 格式）

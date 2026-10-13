@@ -53,7 +53,7 @@ import {
 import { api } from '../api'
 import ErrorSnackbar from '../components/ErrorSnackbar'
 import { useRefreshInterval } from '../contexts/RefreshContext'
-import type { UsbModeResponse, AirplaneModeResponse, WebhookConfig, SmsPushConfig, SmsPushProvider } from '../api/types'
+import type { UsbModeResponse, AirplaneModeResponse, WebhookConfig, SmsPushConfig, SmsPushProvider, PerfTuneResponse, RoamingResponse } from '../api/types'
 import { DEFAULT_SMS_TEMPLATE, DEFAULT_CALL_TEMPLATE, DEFAULT_SMS_PUSH_TITLE_TEMPLATE, DEFAULT_SMS_PUSH_BODY_TEMPLATE } from '../api/types'
 
 interface HealthStatus {
@@ -157,6 +157,9 @@ export default function ConfigurationPage() {
   const [dataStatus, setDataStatus] = useState(false)
   // 数据开关操作后的短暂互斥：期间忽略 loadData 的轮询写回
   const dataToggleLockRef = useRef(0)
+  // 数据漫游
+  const [roaming, setRoaming] = useState<RoamingResponse | null>(null)
+  const [roamingSwitching, setRoamingSwitching] = useState(false)
   const [usbMode, setUsbMode] = useState<UsbModeResponse | null>(null)
   const [selectedUsbMode, setSelectedUsbMode] = useState<number>(1)
   const [usbModePermanent, setUsbModePermanent] = useState<boolean>(false)
@@ -194,6 +197,17 @@ export default function ConfigurationPage() {
   const [smsPushLoading, setSmsPushLoading] = useState(false)
   const [smsPushTesting, setSmsPushTesting] = useState(false)
 
+  // 性能调优（IRQ/RPS）
+  const [perfTune, setPerfTune] = useState<PerfTuneResponse>({
+    enabled: false,
+    applied: false,
+    irq: '',
+    affinity: '',
+    rps: [],
+    flow: '',
+  })
+  const [perfTuneLoading, setPerfTuneLoading] = useState(false)
+
   const checkHealth = useCallback(async () => {
     setHealthLoading(true)
     try {
@@ -217,12 +231,14 @@ export default function ConfigurationPage() {
     setError(null)
     
     try {
-      const [dataRes, usbRes, airplaneModeRes, webhookRes, smsPushRes] = await Promise.all([
+      const [dataRes, usbRes, airplaneModeRes, webhookRes, smsPushRes, perfTuneRes, roamingRes] = await Promise.all([
         api.getDataStatus(),
         api.getUsbMode(),
         api.getAirplaneMode(),
         api.getWebhookConfig(),
         api.getSmsPushConfig(),
+        api.getPerfTune(),
+        api.getRoamingStatus(),
       ])
       
       if (dataRes.data && Date.now() > dataToggleLockRef.current) setDataStatus(dataRes.data.active)
@@ -236,6 +252,8 @@ export default function ConfigurationPage() {
       if (airplaneModeRes.data) setAirplaneMode(airplaneModeRes.data)
       if (webhookRes.data) setWebhookConfig(webhookRes.data)
       if (smsPushRes.data) setSmsPushConfig(normalizeSmsPushConfig(smsPushRes.data))
+      if (perfTuneRes.data) setPerfTune(perfTuneRes.data)
+      if (roamingRes.data) setRoaming(roamingRes.data)
 
       // 加载健康检查
       await checkHealth()
@@ -275,6 +293,36 @@ export default function ConfigurationPage() {
       setSuccess(`数据连接已${newStatus ? '启用' : '禁用'}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleRoamingToggle = () => {
+    void toggleRoaming()
+  }
+
+  const toggleRoaming = async () => {
+    if (!roaming || roamingSwitching) return
+    const prev = roaming
+    const newAllowed = !roaming.roaming_allowed
+    // 乐观更新：避免受控 Switch 在请求期间回弹闪烁
+    setRoaming({ ...roaming, roaming_allowed: newAllowed })
+    setRoamingSwitching(true)
+    try {
+      setError(null)
+      setSuccess(null)
+      const response = await api.setRoamingAllowed(newAllowed)
+      if (response.data) {
+        setRoaming(response.data)
+        setSuccess(`数据漫游已${newAllowed ? '允许' : '禁止'}`)
+      } else {
+        setRoaming(prev)
+        setError(response.message || '漫游设置失败')
+      }
+    } catch (err) {
+      setRoaming(prev)
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setRoamingSwitching(false)
     }
   }
 
@@ -362,6 +410,25 @@ export default function ConfigurationPage() {
       case 2: return 'CDC-ECM'
       case 3: return 'RNDIS'
       default: return 'Unknown'
+    }
+  }
+
+  // 性能调优（IRQ/RPS）
+  const handlePerfTuneToggle = async (enabled: boolean) => {
+    setPerfTuneLoading(true)
+    setError(null)
+    try {
+      const response = await api.setPerfTune(enabled)
+      if (response.status === 'ok' && response.data) {
+        setPerfTune(response.data)
+        setSuccess(enabled ? '性能调优已启用' : '性能调优已关闭')
+      } else {
+        setError(response.message || '性能调优设置失败')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPerfTuneLoading(false)
     }
   }
 
@@ -659,8 +726,39 @@ export default function ConfigurationPage() {
               }
             />
 
+            <Divider sx={{ my: 2 }} />
+
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={roaming?.roaming_allowed ?? false}
+                  onChange={handleRoamingToggle}
+                  disabled={!roaming}
+                  color="info"
+                />
+              }
+              label={
+                <Box>
+                  <Typography variant="body1" fontWeight={600}>
+                    数据漫游
+                    {roaming?.is_roaming && (
+                      <Chip label="漫游中" size="small" color="warning" sx={{ ml: 1, height: 18, fontSize: '0.65rem' }} />
+                    )}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {roaming?.roaming_allowed
+                      ? '已允许：注册到非归属运营商网络时可使用数据'
+                      : '已禁止：注册到非归属运营商网络时不走数据'}
+                  </Typography>
+                </Box>
+              }
+            />
+
             <Alert severity="info" sx={{ mt: 2 }}>
               提示：禁用数据连接将中断所有使用移动网络的应用和服务
+            </Alert>
+            <Alert severity="info" sx={{ mt: 1 }}>
+              提示：数据漫游仅在注册到非归属运营商网络（如出国）时生效；正常使用本地卡无需开启，以免产生漫游流量费用
             </Alert>
           </AccordionDetails>
         </Accordion>
@@ -1342,6 +1440,79 @@ export default function ConfigurationPage() {
               <Typography variant="body2">
                 <strong>💡 提示</strong><br />
                 测试会发送一条模拟短信，建议先确认凭证、服务地址和主题是否填写正确。
+              </Typography>
+            </Alert>
+          </AccordionDetails>
+        </Accordion>
+
+        {/* 性能调优（IRQ/RPS） */}
+        <Accordion
+          expanded={expanded === 'perfTune'}
+          onChange={handleAccordionChange('perfTune')}
+        >
+          <AccordionSummary expandIcon={<ExpandMore />}>
+            <Box display="flex" alignItems="center" gap={1} width="100%">
+              <FlashOn color={perfTune.enabled ? 'warning' : 'primary'} />
+              <Typography fontWeight={600}>性能调优（IRQ/RPS）</Typography>
+              <Box flexGrow={1} />
+              <Chip
+                label={perfTune.enabled ? '已启用' : '已禁用'}
+                color={perfTune.enabled ? 'warning' : 'default'}
+                size="small"
+                onClick={(e: MouseEvent) => e.stopPropagation()}
+              />
+            </Box>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Typography variant="body2" color="text.secondary" paragraph>
+              UDX710 上 5G 收包 IRQ 与 USB 出口 IRQ 默认落在 CPU0。开启后将 USB 中断固定到 CPU1，
+              并打开 RPS 让收包软中断分散到双核。是否提速取决于信号与链路条件，请自行对比验证。
+            </Typography>
+
+            <Divider sx={{ my: 2 }} />
+
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={perfTune.enabled}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => void handlePerfTuneToggle(e.target.checked)}
+                  disabled={perfTuneLoading}
+                  color="warning"
+                />
+              }
+              label={
+                <Box>
+                  <Typography variant="body1" fontWeight={600}>
+                    {perfTune.enabled ? '调优已启用' : '调优已禁用'}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    重启后按此设置自动应用；网卡重建后由健康巡检补齐
+                  </Typography>
+                </Box>
+              }
+              sx={{ mb: 2 }}
+            />
+
+            {perfTuneLoading && <LinearProgress sx={{ mb: 2 }} />}
+
+            <Alert severity="info" sx={{ mb: 2 }}>
+              <Typography variant="body2" component="div">
+                <strong>当前内核参数</strong>
+                <br />
+                xhci IRQ: <code>{perfTune.irq || 'N/A'}</code>
+                {' '}smp_affinity: <code>{perfTune.affinity || 'N/A'}</code>
+                <br />
+                rps_cpus: <code>{perfTune.rps.join(', ') || 'N/A'}</code>
+                {' '}flow_entries: <code>{perfTune.flow || 'N/A'}</code>
+                <br />
+                状态: {perfTune.applied ? '已套用调优参数' : '默认参数'}
+              </Typography>
+            </Alert>
+
+            <Alert severity="warning">
+              <Typography variant="body2">
+                <strong>说明</strong><br />
+                本开关只调整中断亲和与 RPS，不保证吞吐提升。若需回退，关闭开关即可恢复默认。
               </Typography>
             </Alert>
           </AccordionDetails>

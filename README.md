@@ -205,6 +205,37 @@ AT+SPLBAND=2,0,0,0,0
 
 ---
 
+## 📈 性能调优（IRQ/RPS，可选）
+
+UDX710 双核上，5G 收包 IRQ（`sprd,sipa`）与 USB 出口 IRQ（`xhci-hcd`）默认落在 CPU0，高频中断单核串行可能限制下行上限。
+
+**系统配置 → 性能调优（IRQ/RPS）** 提供开关（默认关闭），开启后：
+
+1. 将 xhci IRQ 的 `smp_affinity` 固定到 CPU1
+2. 为 `sipa_eth0` / `usb0` 打开 RPS（`rps_cpus=3`）
+3. 扩大 `rps_sock_flow_entries` 至 32768
+
+设置持久化在 `config.json`，启动时自动应用；网卡重建后由既有健康巡检幂等补齐。关闭开关即恢复默认。
+
+> 是否提速取决于信号与链路条件（弱信号场景可能无明显变化），请自行 A/B 对比验证。本项目不承诺具体吞吐数字。
+
+也可手动一次性应用（重启失效）：
+
+```sh
+# xhci USB IRQ → CPU1（IRQ 号请先 cat /proc/interrupts 确认）
+echo 2 > /proc/irq/97/smp_affinity
+
+for d in sipa_eth0 usb0; do
+  for q in /sys/class/net/$d/queues/rx-*/rps_cpus; do
+    echo 3 > "$q"
+  done
+done
+
+echo 32768 > /proc/sys/net/core/rps_sock_flow_entries
+```
+
+---
+
 ## 📚 API 接口文档
 
 ### 基础信息
@@ -295,6 +326,7 @@ AT+SPLBAND=2,0,0,0,0
 | 接口 | 方法 | 说明 |
 |------|------|------|
 | `/api/ota/status` | GET | OTA 更新状态 |
+| `/api/perf-tune` | GET/POST | IRQ/RPS 性能调优开关 |
 | `/api/ota/upload` | POST | 上传 OTA 包 (最大 50MB) |
 | `/api/ota/apply` | POST | 应用 OTA 更新 |
 | `/api/ota/cancel` | POST | 取消 OTA 更新 |

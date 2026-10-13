@@ -32,6 +32,7 @@ use crate::{
         set_radio_mode, set_roaming_allowed,
     },
     models::*,
+    perf_tune,
     usb_switch,
     utils::{
         bands_to_bitmask, bitmask_to_bands, build_splband_lte_command, build_splband_nr_command,
@@ -2973,6 +2974,62 @@ pub async fn frontend_refresh_heartbeat_handler(
         StatusCode::OK,
         Json(ApiResponse::success_with_message("Refresh heartbeat accepted", response)),
     )
+}
+
+fn perf_tune_snapshot(config_manager: &ConfigManager) -> PerfTuneResponse {
+    let state = perf_tune::current_state();
+    PerfTuneResponse {
+        enabled: config_manager.is_perf_tune_enabled(),
+        applied: state.applied,
+        irq: state.irq,
+        affinity: state.affinity,
+        rps: state.rps,
+        flow: state.flow,
+    }
+}
+
+/// GET /api/perf-tune - 获取 IRQ/RPS 性能调优开关与当前内核参数
+pub async fn get_perf_tune_handler(
+    State(config_manager): State<Arc<ConfigManager>>,
+) -> (StatusCode, Json<ApiResponse<PerfTuneResponse>>) {
+    (
+        StatusCode::OK,
+        Json(ApiResponse::success_with_message("Success", perf_tune_snapshot(&config_manager))),
+    )
+}
+
+/// POST /api/perf-tune - 开关 IRQ/RPS 性能调优（持久化 + 立即生效）
+pub async fn set_perf_tune_handler(
+    State(config_manager): State<Arc<ConfigManager>>,
+    Json(req): Json<PerfTuneRequest>,
+) -> (StatusCode, Json<ApiResponse<PerfTuneResponse>>) {
+    if let Err(e) = config_manager.set_perf_tune_enabled(req.enabled) {
+        return (
+            StatusCode::OK,
+            Json(ApiResponse::error(format!("Failed to persist perf tune flag: {}", e))),
+        );
+    }
+
+    // 先落盘再套用；套用失败时保留开关，便于重试/巡检补齐
+    match perf_tune::sync_enabled(req.enabled) {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(ApiResponse::success_with_message(
+                if req.enabled { "Perf tune enabled" } else { "Perf tune disabled" },
+                perf_tune_snapshot(&config_manager),
+            )),
+        ),
+        Err(e) => {
+            tracing::warn!(error = %e, "perf_tune: apply after toggle failed");
+            (
+                StatusCode::OK,
+                Json(ApiResponse::error(format!(
+                    "Saved, but apply failed: {}",
+                    e
+                ))),
+            )
+        }
+    }
 }
 
 pub async fn get_ota_status_handler() -> impl IntoResponse {

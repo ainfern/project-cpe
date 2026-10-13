@@ -205,6 +205,9 @@ pub struct AppConfig {
     /// 用户在页面上主动关闭了数据流量（watchdog/init 尊重该意图，不自动恢复）
     #[serde(default)]
     pub data_disabled_by_user: bool,
+    /// IRQ/RPS 性能调优开关（UDX710；默认关，收益依赖空口条件）
+    #[serde(default)]
+    pub perf_tune_enabled: bool,
 }
 
 
@@ -300,6 +303,20 @@ impl ConfigManager {
         {
             let mut config = self.config.write().unwrap();
             config.data_disabled_by_user = disabled;
+        }
+        self.save()
+    }
+
+    /// IRQ/RPS 性能调优是否启用
+    pub fn is_perf_tune_enabled(&self) -> bool {
+        self.config.read().unwrap().perf_tune_enabled
+    }
+
+    /// 开关 IRQ/RPS 性能调优（持久化到 config.json）
+    pub fn set_perf_tune_enabled(&self, enabled: bool) -> Result<(), String> {
+        {
+            let mut config = self.config.write().unwrap();
+            config.perf_tune_enabled = enabled;
         }
         self.save()
     }

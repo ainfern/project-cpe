@@ -259,6 +259,12 @@ fn ensure_health_sync() -> Result<bool, String> {
         // 明细（哪个 conf、原值）已在函数内按项打印
         acted = true;
     }
+    // IRQ/RPS 调优：开关开着时顺带重套（usb0/sipa_eth0 重建会把 rps 归零）
+    match crate::perf_tune::ensure_if_enabled(crate::perf_tune::enabled_flag()) {
+        Ok(true) => acted = true,
+        Ok(false) => {}
+        Err(e) => warn!(error = %e, "perf_tune re-apply failed"),
+    }
 
     Ok(acted)
 }

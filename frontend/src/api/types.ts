@@ -707,6 +707,16 @@ export interface RefreshConfigResponse {
   frontend_connected: boolean
 }
 
+// IRQ/RPS 性能调优
+export interface PerfTuneResponse {
+  enabled: boolean
+  applied: boolean
+  irq: string
+  affinity: string
+  rps: string[]
+  flow: string
+}
+
 export interface OtaMeta {
   version: string
   commit: string
