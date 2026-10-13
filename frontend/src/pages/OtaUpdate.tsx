@@ -120,19 +120,17 @@ export default function OtaUpdate() {
     }
   }
 
-  const handleApply = async (restartNow: boolean) => {
+  const handleApply = async () => {
     setConfirmDialog(null)
     setApplying(true)
     setError(null)
     setSuccess(null)
 
     try {
-      const res = await api.applyOta(restartNow)
+      // 固定应用并重启：稍后重启会让旧进程 + 新前端并存，造成接口错位
+      const res = await api.applyOta(true)
       if (res.status === 'ok') {
-        setSuccess(restartNow 
-          ? '更新已应用，系统即将重启...' 
-          : '更新已应用，请手动重启服务生效'
-        )
+        setSuccess('更新已应用，系统即将重启...')
         setUploadResult(null)
         await loadStatus()
       } else {
@@ -437,20 +435,19 @@ export default function OtaUpdate() {
             确定要应用此更新吗？更新将替换当前的后端程序和前端文件。
           </DialogContentText>
           <Alert severity="warning" sx={{ mt: 2 }}>
-            建议在应用更新后重启服务以确保更新完全生效。
+            应用后将自动重启，以确保新版本完全生效。
           </Alert>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setConfirmDialog(null)}>取消</Button>
-          <Button 
-            onClick={() => void handleApply(false)} 
+          <Button
+            onClick={() => setConfirmDialog(null)}
             variant="outlined"
             color="primary"
           >
-            仅应用（稍后重启）
+            取消
           </Button>
-          <Button 
-            onClick={() => void handleApply(true)} 
+          <Button
+            onClick={() => void handleApply()}
             variant="contained"
             color="success"
             startIcon={<RestartAlt />}
