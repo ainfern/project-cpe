@@ -203,8 +203,10 @@ export default function NetworkPage() {
 
   // 加载其他数据（自动刷新时调用，不包含频段锁定配置）
   const loadData = useCallback(async () => {
-    setError(null)
-    
+    // 这里不能 setError(null)：loadData 会被页面轮询（refreshInterval，默认 5s）
+    // 反复调用，若每次轮询都清空 error，会把用户操作产生的错误提示（如注册失败）
+    // 在 snackbar 的 autoHideDuration 到期前提前刷掉。错误通知统一由
+    // ErrorSnackbar 的 autoHideDuration 回收，轮询只负责在失败时上报新错误。
     try {
       const [cellsRes, operatorsRes, cellLocRes, cellLockRes, interfacesRes, apnRes] = await Promise.all([
         api.getCellsInfo(),
@@ -286,13 +288,13 @@ export default function NetworkPage() {
   }
 
   // 手动注册运营商
-  const registerManual = async (mccmnc: string) => {
+  const registerManual = async (mccmnc: string, tech?: string) => {
     setRegistering(true)
     setError(null)
     try {
-      const response = await api.registerOperatorManual(mccmnc)
+      const response = await api.registerOperatorManual(mccmnc, tech)
       if (response.status === 'ok') {
-        setSuccess(`正在注册到运营商 ${mccmnc}...`)
+        setSuccess(`已注册到运营商 ${mccmnc}`)
         setTimeout(loadData, 3000)
       } else {
         setError(response.message || '注册失败')
@@ -304,8 +306,8 @@ export default function NetworkPage() {
     }
   }
 
-  const handleRegisterManual = (mccmnc: string) => {
-    void registerManual(mccmnc)
+  const handleRegisterManual = (mccmnc: string, tech?: string) => {
+    void registerManual(mccmnc, tech)
   }
 
   // 自动注册
@@ -315,7 +317,7 @@ export default function NetworkPage() {
     try {
       const response = await api.registerOperatorAuto()
       if (response.status === 'ok') {
-        setSuccess('已启动自动注册...')
+        setSuccess('自动注册完成')
         setTimeout(loadData, 3000)
       } else {
         setError(response.message || '自动注册失败')
@@ -723,7 +725,14 @@ export default function NetworkPage() {
                             <Button
                               size="small"
                               variant="outlined"
-                              onClick={() => { handleRegisterManual(`${op.mcc}${op.mnc}`) }}
+                              onClick={() => {
+                                const tech = op.technologies?.includes('LTE')
+                                  ? 'LTE'
+                                  : op.technologies?.includes('GSM')
+                                    ? 'GSM'
+                                    : op.technologies?.[0]
+                                handleRegisterManual(`${op.mcc}${op.mnc}`, tech)
+                              }}
                               disabled={registering}
                             >
                               注册

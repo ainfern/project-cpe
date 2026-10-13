@@ -2309,7 +2309,7 @@ pub async fn register_operator_manual_handler(
     State(conn): State<Arc<Connection>>,
     Json(req): Json<crate::models::ManualRegisterRequest>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-    match crate::dbus::register_operator_manual(&conn, &req.mccmnc).await {
+    match crate::dbus::register_operator_manual(&conn, &req.mccmnc, req.tech.as_deref()).await {
         Ok(_) => (
             StatusCode::OK,
             Json(ApiResponse::success_with_message(

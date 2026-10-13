@@ -414,8 +414,8 @@ class UDX710API {
   }
 
   // 手动注册到指定运营商
-  async registerOperatorManual(mccmnc: string) {
-    const body: ManualRegisterRequest = { mccmnc }
+  async registerOperatorManual(mccmnc: string, tech?: string) {
+    const body: ManualRegisterRequest = { mccmnc, tech }
     return request<ApiResponse<Record<string, never>>>('/network/register-manual', {
       method: 'POST',
       body: JSON.stringify(body),

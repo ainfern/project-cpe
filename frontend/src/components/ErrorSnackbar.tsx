@@ -30,8 +30,12 @@ interface ErrorSnackbarProps {
 
 export default function ErrorSnackbar({ error, onClose }: ErrorSnackbarProps) {
   const [dialogOpen, setDialogOpen] = useState(false)
+  // 打开详情时对错误内容做快照：snackbar 自动隐藏会触发 onClose 把父组件的
+  // error 清空，若详情直接读 error prop，弹窗内容就会掉成"未知错误"。
+  const [detail, setDetail] = useState('')
 
   const handleDialogOpen = () => {
+    setDetail(error || '未知错误')
     setDialogOpen(true)
   }
 
@@ -39,16 +43,17 @@ export default function ErrorSnackbar({ error, onClose }: ErrorSnackbarProps) {
     setDialogOpen(false)
   }
 
+  // 只关闭提示条，不影响已经打开的详情弹窗
   const handleSnackbarClose = () => {
     onClose()
-    setDialogOpen(false)
   }
 
   return (
     <>
       <Snackbar
         open={!!error}
-        autoHideDuration={6000}
+        // 详情弹窗打开期间不自动隐藏，避免读到一半提示消失
+        autoHideDuration={dialogOpen ? null : 6000}
         onClose={handleSnackbarClose}
         anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
       >
@@ -110,7 +115,7 @@ export default function ErrorSnackbar({ error, onClose }: ErrorSnackbarProps) {
               overflow: 'auto',
             }}
           >
-            {error || '未知错误'}
+            {detail}
           </Box>
         </DialogContent>
         <DialogActions>

@@ -13,6 +13,7 @@
 //! 处理与 ofono D-Bus 服务的通信
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -1690,18 +1691,39 @@ pub async fn get_operators(conn: &Connection) -> zbus::Result<OperatorListRespon
     }).await
 }
 
+/// 慢操作（运营商注册/扫描）等待 modem 回复的客户端超时。
+///
+/// ofono 的 `Register`/`Scan` 是异步方法，回复要等硬件真正完成，弱信号下可能要数分钟。
+/// 客户端不设超时会让 `with_serial` 的全局锁被长期占用；若驱动异常不回调，
+/// 更会永久死锁整个后端的 D-Bus/AT 操作。
+const SLOW_DBUS_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// 为 ofono 慢操作加上客户端超时，避免全局锁被无限期占用。
+async fn with_slow_timeout<T>(
+    fut: impl Future<Output = zbus::Result<T>>,
+    what: &str,
+) -> zbus::Result<T> {
+    tokio::time::timeout(SLOW_DBUS_TIMEOUT, fut).await.map_err(|_| {
+        zbus::Error::Failure(format!(
+            "Timed out after {}s waiting for {}",
+            SLOW_DBUS_TIMEOUT.as_secs(),
+            what
+        ))
+    })?
+}
+
 /// 扫描运营商（慢，返回所有可用）
 pub async fn scan_operators(conn: &Connection) -> zbus::Result<OperatorListResponse> {
     with_serial(async {
         let proxy = Proxy::new(conn, "org.ofono", "/ril_0", "org.ofono.NetworkRegistration").await?;
-        let result: Vec<(zbus::zvariant::OwnedObjectPath, HashMap<String, OwnedValue>)> = 
-            proxy.call("Scan", &()).await?;
-        
+        let result: Vec<(zbus::zvariant::OwnedObjectPath, HashMap<String, OwnedValue>)> =
+            with_slow_timeout(proxy.call("Scan", &()), "operator scan").await?;
+
         let mut operators = Vec::new();
         for (path, props) in result {
             operators.push(parse_operator_info(path.to_string(), props));
         }
-        
+
         Ok(OperatorListResponse { operators })
     }).await
 }
@@ -1751,18 +1773,44 @@ fn parse_operator_info(path: String, props: HashMap<String, OwnedValue>) -> Oper
 }
 
 /// 手动注册到指定运营商
-pub async fn register_operator_manual(conn: &Connection, mccmnc: &str) -> zbus::Result<()> {
+///
+/// 本机 vendor ofono（Unisoc ofono-1.25）在 `org.ofono.NetworkRegistration` 上
+/// 扩展了 `RegisterManually(s mccmnc, v tech)`——签名是 `sv` 而非上游常见的 `ss`。
+/// `tech` 为 variant 包一层字符串，实测仅 `LTE`/`GSM`（`NR` 不稳定）可用。
+/// 标准 `NetworkOperator.Register()` 在 sprd 驱动上会 `Operation failed`，不可用。
+pub async fn register_operator_manual(
+    conn: &Connection,
+    mccmnc: &str,
+    tech: Option<&str>,
+) -> zbus::Result<()> {
     with_serial(async {
+        if mccmnc.is_empty() || !mccmnc.chars().all(|c| c.is_ascii_digit()) {
+            return Err(zbus::Error::Failure(format!("Invalid mccmnc: {}", mccmnc)));
+        }
+
+        let tech = tech
+            .map(str::to_string)
+            .unwrap_or_else(|| "LTE".to_string());
+        if !matches!(tech.as_str(), "LTE" | "GSM" | "NR") {
+            return Err(zbus::Error::Failure(format!("Invalid tech: {}", tech)));
+        }
+
         let proxy = Proxy::new(conn, "org.ofono", "/ril_0", "org.ofono.NetworkRegistration").await?;
-        proxy.call("RegisterManually", &(mccmnc, "")).await
-    }).await
+        let tech_val = zbus::zvariant::Value::Str(tech.as_str().into());
+        with_slow_timeout(
+            proxy.call("RegisterManually", &(mccmnc, tech_val)),
+            "operator registration",
+        )
+        .await
+    })
+    .await
 }
 
 /// 自动注册运营商
 pub async fn register_operator_auto(conn: &Connection) -> zbus::Result<()> {
     with_serial(async {
         let proxy = Proxy::new(conn, "org.ofono", "/ril_0", "org.ofono.NetworkRegistration").await?;
-        proxy.call("Register", &()).await
+        with_slow_timeout(proxy.call("Register", &()), "automatic registration").await
     }).await
 }
 

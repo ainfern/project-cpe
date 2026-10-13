@@ -134,7 +134,10 @@ export function useDashboardData(refreshInterval: number, refreshKey: number) {
   const loadData = useCallback(async () => {
     const requestId = requestIdRef.current + 1
     requestIdRef.current = requestId
-    setError(null)
+    // 这里不能 setError(null)：loadData 会被 useAdaptivePolling 反复调用，若每次
+    // 轮询都清空 error，会把用户操作（toggleData / toggleAirplaneMode / toggleRoaming）
+    // 失败产生的错误提示在 snackbar 的 autoHideDuration 到期前提前刷掉。
+    // 错误通知统一由 ErrorSnackbar 的 autoHideDuration 回收，轮询只负责在失败时上报新错误。
 
     const extendedRequests = Promise.allSettled([api.getImsStatus(), api.getRoamingStatus()])
 

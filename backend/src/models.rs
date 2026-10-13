@@ -882,6 +882,9 @@ pub struct OperatorListResponse {
 pub struct ManualRegisterRequest {
     /// MCCMNC（如 "46001" 表示中国联通）
     pub mccmnc: String,
+    /// 接入技术（LTE/GSM/NR），缺省由后端挑选
+    #[serde(default)]
+    pub tech: Option<String>,
 }
 
 // ============ IMEISV（软件版本号）模型 ============

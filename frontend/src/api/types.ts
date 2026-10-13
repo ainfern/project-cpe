@@ -499,6 +499,7 @@ export interface OperatorListResponse {
 
 export interface ManualRegisterRequest {
   mccmnc: string // MCCMNC（如 "46001"）
+  tech?: string // 接入技术（LTE/GSM/NR），缺省后端选 LTE
 }
 
 // 呼叫转移
