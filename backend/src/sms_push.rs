@@ -250,16 +250,19 @@ fn extract_provider_error(prefix: &str, value: &Value) -> String {
 }
 
 fn render_sms_push_template(template: &str, message: &SmsMessage) -> String {
+    // 将时间戳统一转为北京时间 (UTC+8) 显示
+    let timestamp = crate::utils::format_beijing_time(&message.timestamp);
+    
     template
         .replace("{{id}}", &message.id.to_string())
         .replace("{{phone_number}}", &message.phone_number)
         .replace("{{content}}", &message.content)
         .replace("{{direction}}", &message.direction)
-        .replace("{{timestamp}}", &message.timestamp)
+        .replace("{{timestamp}}", &timestamp)
         .replace("{{status}}", &message.status)
         .replace("{{sender}}", &message.phone_number)
         .replace("{{message}}", &message.content)
-        .replace("{{time}}", &message.timestamp)
+        .replace("{{time}}", &timestamp)
 }
 
 fn resolve_endpoint(input: &str, default: &str) -> String {
