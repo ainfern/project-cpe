@@ -158,23 +158,27 @@ impl WebhookSender {
 /// 渲染短信模板，替换变量
 /// 支持的变量：{{id}}, {{phone_number}}, {{content}}, {{direction}}, {{timestamp}}, {{status}}
 fn render_sms_template(template: &str, message: &SmsMessage) -> String {
+    // 将时间戳统一转为北京时间 (UTC+8) 显示
+    let timestamp = crate::utils::format_beijing_time(&message.timestamp);
+
     template
         .replace("{{id}}", &message.id.to_string())
         .replace("{{phone_number}}", &message.phone_number)
         .replace("{{content}}", &escape_json_string(&message.content))
         .replace("{{direction}}", &message.direction)
-        .replace("{{timestamp}}", &message.timestamp)
+        .replace("{{timestamp}}", &timestamp)
         .replace("{{status}}", &message.status)
         // 别名支持
         .replace("{{sender}}", &message.phone_number)
         .replace("{{message}}", &escape_json_string(&message.content))
-        .replace("{{time}}", &message.timestamp)
+        .replace("{{time}}", &timestamp)
 }
 
 /// 渲染通话模板，替换变量
 /// 支持的变量：{{id}}, {{phone_number}}, {{direction}}, {{duration}}, {{start_time}}, {{end_time}}, {{answered}}
 fn render_call_template(template: &str, call: &CallRecord) -> String {
-    let end_time = call.end_time.clone().unwrap_or_default();
+    let start_time = crate::utils::format_beijing_time(&call.start_time);
+    let end_time = crate::utils::format_beijing_time(call.end_time.as_deref().unwrap_or_default());
     let answered_str = if call.answered { "是" } else { "否" };
     let direction_cn = if call.direction == "incoming" { "来电" } else { "去电" };
     
@@ -184,13 +188,13 @@ fn render_call_template(template: &str, call: &CallRecord) -> String {
         .replace("{{direction}}", &call.direction)
         .replace("{{direction_cn}}", direction_cn)
         .replace("{{duration}}", &call.duration.to_string())
-        .replace("{{start_time}}", &call.start_time)
+        .replace("{{start_time}}", &start_time)
         .replace("{{end_time}}", &end_time)
         .replace("{{answered}}", answered_str)
         .replace("{{answered_bool}}", &call.answered.to_string())
         // 别名支持
         .replace("{{caller}}", &call.phone_number)
-        .replace("{{time}}", &call.start_time)
+        .replace("{{time}}", &start_time)
 }
 
 /// 转义 JSON 字符串中的特殊字符
