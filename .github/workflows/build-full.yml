@@ -1,4 +1,4 @@
-name: Build OTA Package
+name: Build FULL Package
 
 on:
   workflow_dispatch:
