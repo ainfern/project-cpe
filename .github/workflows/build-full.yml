@@ -1,4 +1,19 @@
-name: Build FULL Package
+# 构建"完整包"（全量刷机包）中的 userdata.bin
+#
+# 产物：项目根目录 userdata.bin（UBIFS 镜像，已含新编译的 udx710 后端 + www 前端）
+# 用途：替换官方完整包（udx710-full-<VERSION>）中的 userdata.bin，
+#       再用 spd_dump / install.bat 全量刷机。system.bin 等厂商固件不在此 workflow 范围内。
+#
+# userdata 原厂镜像来源（三选一，按优先级）：
+#   1. 手动触发时填写 userdata_url：原厂 userdata.bin 的直链下载地址
+#   2. 仓库根目录提交 userdata.bin 文件
+#   3. 仓库内已提交 userdata/ 目录树（已用 ubireader_extract_files 提取好的）
+# 都不提供则 workflow 直接报错。
+#
+# UBIFS 参数（-m / -e / -c）默认 2048 / 126976 / 516，来自原作者对原镜像的取值；
+# 建议先用 ubireader_display_info 查看原厂 userdata.bin 的实际参数并在手动触发时覆盖。
+
+name: Build Full Package (userdata.bin)
 
 on:
   workflow_dispatch:
@@ -8,6 +23,26 @@ on:
         required: false
         type: boolean
         default: true
+      userdata_url:
+        description: '原厂 userdata.bin 直链下载地址（可留空；留空则用仓库根目录的 userdata.bin，再没有则用仓库内 userdata/ 目录树）'
+        required: false
+        type: string
+        default: ''
+      min_io_size:
+        description: 'UBIFS 最小 I/O 单元大小 -m，默认 2048（建议用 ubireader_display_info 从原镜像核对）'
+        required: false
+        type: string
+        default: '2048'
+      leb_size:
+        description: 'UBIFS 逻辑擦除块大小 -e，默认 126976'
+        required: false
+        type: string
+        default: '126976'
+      max_leb_cnt:
+        description: 'UBIFS 最大逻辑擦除块数量 -c，默认 516'
+        required: false
+        type: string
+        default: '516'
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,8 +50,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build-ota:
-    name: Build OTA Package
+  build-full:
+    name: Build Full Package (userdata.bin)
     runs-on: ubuntu-24.04-arm
 
     steps:
@@ -48,6 +83,13 @@ jobs:
         run: |
           sudo apt-get install -y upx-ucl
           upx --version
+
+      - name: Install mtd-utils and ubireader
+        run: |
+          sudo apt-get install -y mtd-utils
+          python3 -m pip install --break-system-packages ubireader
+          mkfs.ubifs --version
+          ubireader_extract_files --help >/dev/null 2>&1 || true
 
       - name: Validate version numbers
         run: |
@@ -132,101 +174,81 @@ jobs:
           echo "前端构建完成:"
           ls -lh dist/
 
-      - name: Package OTA
+      - name: Prepare userdata source
+        run: |
+          echo "准备 userdata 源..."
+
+          # 优先级 1: 手动触发时提供的直链
+          if [ -n "${{ inputs.userdata_url }}" ]; then
+            echo "从 URL 下载原厂 userdata.bin: ${{ inputs.userdata_url }}"
+            curl -fsSL -o userdata.bin "${{ inputs.userdata_url }}"
+            ls -lh userdata.bin
+          fi
+
+          # 优先级 2: 仓库根目录的 userdata.bin
+          if [ ! -f userdata.bin ]; then
+            if [ -f "$GITHUB_WORKSPACE/userdata.bin" ]; then
+              echo "使用仓库根目录的 userdata.bin"
+              ls -lh userdata.bin
+            fi
+          fi
+
+          # 优先级 3: 仓库内已提取的 userdata/ 目录树
+          if [ ! -f userdata.bin ] && [ ! -d userdata ]; then
+            echo "❌ 错误: 未找到 userdata 源。请三选一:"
+            echo "  1. 手动触发时填写 userdata_url 直链"
+            echo "  2. 在仓库根目录提交 userdata.bin"
+            echo "  3. 在仓库内提交已提取的 userdata/ 目录树"
+            exit 1
+          fi
+
+          if [ -f userdata.bin ]; then
+            echo "原厂 userdata.bin 信息:"
+            ls -lh userdata.bin
+            md5sum userdata.bin
+            ubireader_display_info userdata.bin || true
+          else
+            echo "使用仓库内 userdata/ 目录树（跳过提取）"
+            find userdata -maxdepth 2 -type d | head -20
+          fi
+
+      - name: Extract UBIFS userdata tree
+        if: hashFiles('userdata.bin') != '' && !hashFiles('userdata/**')
+        run: |
+          echo "提取 UBIFS 目录树..."
+          ubireader_extract_files -o userdata userdata.bin
+          echo "提取完成，顶层结构:"
+          find userdata -maxdepth 2 | head -30
+
+      - name: Package userdata.bin
         id: package
         run: |
           echo "=========================================="
-          echo "  生成 OTA 更新包"
+          echo "  打包 UBIFS 镜像 (userdata.bin)"
           echo "=========================================="
           echo ""
 
-          VERSION="${{ steps.version.outputs.version }}"
-          COMMIT=$(git rev-parse --short HEAD)
-          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          ARCH="aarch64-unknown-linux-musl"
-
-          BINARY_PATH="backend/target/aarch64-unknown-linux-musl/release/udx710"
-          FRONTEND_DIR="frontend/dist"
-
-          if [ ! -f "$BINARY_PATH" ]; then
-            echo "错误: 后端二进制不存在"
-            exit 1
-          fi
-
-          if [ ! -d "$FRONTEND_DIR" ]; then
-            echo "错误: 前端构建产物不存在"
-            exit 1
-          fi
-
-          OTA_TMP=$(mktemp -d)
-
-          echo "版本: $VERSION"
-          echo "Commit: $COMMIT"
-          echo "构建时间: $BUILD_TIME"
-          echo "架构: $ARCH"
-          echo ""
-
-          echo "复制后端二进制..."
-          cp "$BINARY_PATH" "$OTA_TMP/udx710"
-          chmod 755 "$OTA_TMP/udx710"
-
-          BINARY_MD5=$(md5sum "$OTA_TMP/udx710" | cut -d' ' -f1)
-          echo "binary md5: $BINARY_MD5"
-
-          echo "复制前端文件..."
-          mkdir -p "$OTA_TMP/www"
-          cp -r "$FRONTEND_DIR"/* "$OTA_TMP/www/"
-
-          echo "计算前端 MD5..."
-          FRONTEND_MD5=$(find "$OTA_TMP/www" -type f -exec md5sum {} \; | cut -d' ' -f1 | sort | md5sum | cut -d' ' -f1)
-          echo "frontend md5: $FRONTEND_MD5"
-
-          cat > "$OTA_TMP/meta.json" <<EOF
-          {
-              "version": "$VERSION",
-              "commit": "$COMMIT",
-              "build_time": "$BUILD_TIME",
-              "binary_md5": "$BINARY_MD5",
-              "frontend_md5": "$FRONTEND_MD5",
-              "arch": "$ARCH"
-          }
-          EOF
-
-          cat "$OTA_TMP/meta.json"
-          echo ""
-
-          mkdir -p release
-
-          OTA_FILE="release/udx710-ota-${VERSION}.tar.gz"
-          echo "打包 OTA 更新包..."
-          cd "$OTA_TMP"
-          tar -czf "$GITHUB_WORKSPACE/$OTA_FILE" meta.json udx710 www
-          cd "$GITHUB_WORKSPACE"
+          # pack-userdata.sh: 复制新构建的后端+前端到 userdata/home/root，再 mkfs.ubifs 打包
+          ./scripts/pack-userdata.sh \
+            --min-io=${{ inputs.min_io_size }} \
+            --leb-size=${{ inputs.leb_size }} \
+            --max-leb=${{ inputs.max_leb_cnt }}
 
           echo ""
-          echo "=========================================="
-          echo "OTA 更新包打包完成"
-          echo "=========================================="
-          echo ""
-          echo "输出文件: $OTA_FILE"
-          ls -lh "$OTA_FILE"
-          echo ""
-          echo "包内容:"
-          tar -tzf "$OTA_FILE" | head -20
-          echo ""
+          echo "校验新镜像:"
+          ls -lh userdata.bin
+          md5sum userdata.bin
+          ubireader_display_info userdata.bin || true
 
-          OTA_MD5=$(md5sum "$OTA_FILE" | cut -d' ' -f1)
-          echo "OTA md5: $OTA_MD5"
-          echo ""
+          echo "userdata_file=userdata.bin" >> "$GITHUB_OUTPUT"
+          echo "userdata_md5=$(md5sum userdata.bin | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "userdata_size=$(stat -c%s userdata.bin)" >> "$GITHUB_OUTPUT"
 
-          echo "ota_file=$OTA_FILE" >> "$GITHUB_OUTPUT"
-          echo "ota_md5=$OTA_MD5" >> "$GITHUB_OUTPUT"
-
-      - name: Upload OTA package
+      - name: Upload userdata.bin
         uses: actions/upload-artifact@v6
         with:
-          name: udx710-ota-${{ steps.version.outputs.version }}
-          path: release/udx710-ota-${{ steps.version.outputs.version }}.tar.gz
+          name: udx710-full-${{ steps.version.outputs.version }}-userdata
+          path: userdata.bin
           retention-days: 90
           if-no-files-found: error
 
@@ -234,25 +256,20 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: release/udx710-ota-${{ steps.version.outputs.version }}.tar.gz
+          files: userdata.bin
           body: |
-            ## OTA 更新包
+            ## 完整包 userdata.bin
 
             **版本**: ${{ steps.version.outputs.version }}
             **Commit**: ${{ github.sha }}
             **构建时间**: ${{ github.event.repository.updated_at }}
+            **UBIFS**: -m ${{ inputs.min_io_size }} -e ${{ inputs.leb_size }} -c ${{ inputs.max_leb_cnt }}
 
-            ### 安装说明
+            ### 刷机说明
 
-            ```bash
-            curl -X POST http://192.168.66.1:3000/api/ota/upload \
-              -H "Content-Type: application/octet-stream" \
-              --data-binary "@udx710-ota-${{ steps.version.outputs.version }}.tar.gz"
-
-            curl -X POST http://192.168.66.1:3000/api/ota/apply \
-              -H "Content-Type: application/json" \
-              -d '{"restart_now":true}'
-            ```
+            1. 下载本 Release 的 `userdata.bin`
+            2. 用它替换官方完整包 `udx710-full-${{ steps.version.outputs.version }}` 中的 `userdata.bin`（`system.bin`、fdl、驱动等保持原厂不动）
+            3. 短接模块进入 U2S 模式，运行 `install.bat`（或手动 spd_dump）全量刷机
           draft: false
           prerelease: false
         env:
@@ -261,7 +278,7 @@ jobs:
       - name: Build Summary
         run: |
           {
-            echo "## OTA 包构建完成"
+            echo "## 完整包构建完成"
             echo ""
             echo "| 项目 | 值 |"
             echo "|------|-----|"
@@ -269,8 +286,14 @@ jobs:
             echo "| Commit | ${{ github.sha }} |"
             echo "| 架构 | aarch64-unknown-linux-musl |"
             echo "| UPX 压缩 | ${{ inputs.use_upx }} |"
+            echo "| UBIFS (-m/-e/-c) | ${{ inputs.min_io_size }} / ${{ inputs.leb_size }} / ${{ inputs.max_leb_cnt }} |"
             echo ""
             echo "### 产物"
-            echo "- \`${{ steps.package.outputs.ota_file }}\`"
-            echo "- MD5: \`${{ steps.package.outputs.ota_md5 }}\`"
+            echo "- \`${{ steps.package.outputs.userdata_file }}\` (${{ steps.package.outputs.userdata_size }} 字节)"
+            echo "- MD5: \`${{ steps.package.outputs.userdata_md5 }}\`"
+            echo ""
+            echo "### 刷机步骤"
+            echo "1. 下载产物 userdata.bin"
+            echo "2. 替换官方完整包 udx710-full-${{ steps.version.outputs.version }} 中的 userdata.bin"
+            echo "3. 短接进入 U2S 模式，运行 install.bat 全量刷机"
           } >> "$GITHUB_STEP_SUMMARY"
