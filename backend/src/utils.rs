@@ -11,6 +11,41 @@
 //! 工具函数模块
 //! 
 //! 包含 AT 指令解析、数据处理等工具函数
+/// 将时间字符串转换为北京时间 (UTC+8) 显示
+///
+/// 兼容两种输入格式：
+/// - RFC3339 带时区（如 `2026-11-02T00:30:00+00:00` 或 `2026-11-02T00:30:00Z`）
+/// - 无时区 `YYYY-MM-DD HH:MM:SS`（视为 UTC 时间）
+///
+/// 解析失败时原样返回输入字符串
+pub fn format_beijing_time(ts: &str) -> String {
+    use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone};
+
+    // 北京时间固定为 UTC+8（无夏令时）
+    let beijing = match FixedOffset::east_opt(8 * 3600) {
+        Some(offset) => offset,
+        None => return ts.to_string(),
+    };
+
+    // 先尝试 RFC3339 解析（带时区，如 Utc::now().to_rfc3339() 的结果）
+    if let Ok(dt) = DateTime::parse_from_rfc3339(ts) {
+        return dt
+            .with_timezone(&beijing)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+    }
+
+    // 再尝试无时区格式，按 UTC 处理（如测试模板 Utc::now().format("%Y-%m-%d %H:%M:%S")）
+    if let Ok(dt) = NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
+        return beijing
+            .from_utc_datetime(&dt)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+    }
+
+    // 解析失败，原样返回
+    ts.to_string()
+}
 
 use crate::models::{CellInfo, IpAddress, NetworkInterfaceInfo};
 use std::collections::HashMap;
